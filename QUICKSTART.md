@@ -4,7 +4,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pairadigm.git
+git clone https://github.com/mlchrzan/pairadigm.git
 cd pairadigm
 
 # Create virtual environment
