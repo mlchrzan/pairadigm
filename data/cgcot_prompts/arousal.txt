@@ -1,0 +1,7 @@
+Summarize the text in one sentence noting any notable punctuation, capitalization, emojis, or formatting: {text}
+
+Identify the primary emotion or affective state conveyed in the following text if any (examples: anger, excitement, sadness, boredom, urgency, amusement, none). Text: {text}
+
+Describe the intensity of the emotional expression in the following text using descriptive labels (calm, mild, moderate, high, explosive) and CONCISELY cite textual cues that justify this label (examples: exclamation marks, all-caps, repeated punctuation, interjections, short emphatic sentences). Text: {text}
+
+Based on your previous analysis, provide a single categorical judgment of the following text: Low Arousal, Moderate Arousal, or High Arousal only using one of those three labels. Text: {text}
