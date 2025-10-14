@@ -15,6 +15,8 @@ import plotly.graph_objects as go
 import time
 import anthropic
 import warnings
+import pickle
+from pathlib import Path
 
 # AltTest Code is from https://github.com/nitaytech/AltTest 
 import numpy as np
@@ -1483,3 +1485,73 @@ class Pairadigm:
             return fig
         else:
             fig.show()
+    
+    def save(self, filepath: str):
+        """
+        Save a Pairadigm object to a file using pickle.
+        
+        Parameters
+        ----------
+        filepath : str
+            Path where the object should be saved. If no extension is provided,
+            '.pkl' will be added automatically.
+            
+        Examples
+        --------
+        >>> pairadigm_obj.save('my_analysis.pkl')
+        >>> pairadigm_obj.save('results/analysis')  # Saves as 'results/analysis.pkl'
+        """
+        # Ensure filepath has .pkl extension
+        filepath = Path(filepath)
+        if filepath.suffix != '.pkl':
+            filepath = filepath.with_suffix('.pkl')
+        
+        # Create directory if it doesn't exist
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(filepath, 'wb') as f:
+                pickle.dump(self, f)
+            print(f"Pairadigm object saved successfully to: {filepath}")
+        except Exception as e:
+            raise IOError(f"Failed to save Pairadigm object: {e}")
+    
+    @staticmethod
+    def load(filepath: str) -> 'Pairadigm':
+        """
+        Load a Pairadigm object from a pickle file.
+        
+        Parameters
+        ----------
+        filepath : str
+            Path to the saved Pairadigm object file.
+            
+        Returns
+        -------
+        Pairadigm
+            The loaded Pairadigm object.
+            
+        Examples
+        --------
+        >>> pairadigm_obj = Pairadigm.load('my_analysis.pkl')
+        """
+        filepath = Path(filepath)
+        
+        # Try adding .pkl extension if file not found
+        if not filepath.exists() and filepath.suffix != '.pkl':
+            filepath = filepath.with_suffix('.pkl')
+        
+        if not filepath.exists():
+            raise FileNotFoundError(f"File not found: {filepath}")
+        
+        try:
+            with open(filepath, 'rb') as f:
+                obj = pickle.load(f)
+            
+            if not isinstance(obj, Pairadigm):
+                raise TypeError("Loaded object is not a Pairadigm instance")
+            
+            print(f"Pairadigm object loaded successfully from: {filepath}")
+            return obj
+        except Exception as e:
+            raise IOError(f"Failed to load Pairadigm object: {e}")
