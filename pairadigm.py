@@ -912,10 +912,10 @@ class Pairadigm:
                     continue
                     
                 human_decision = row[col]
-                if human_decision == 'Text1':
+                if human_decision == 'Text1' or human_decision == 0:
                     humans_annotations[col][item1_id] = humans_annotations[col].get(item1_id, 0) + 1
                     humans_annotations[col][item2_id] = humans_annotations[col].get(item2_id, 0)
-                elif human_decision == 'Text2':
+                elif human_decision == 'Text2' or human_decision == 1:
                     humans_annotations[col][item2_id] = humans_annotations[col].get(item2_id, 0) + 1
                     humans_annotations[col][item1_id] = humans_annotations[col].get(item1_id, 0)
                 else:
