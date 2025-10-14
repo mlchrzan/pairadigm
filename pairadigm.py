@@ -1355,6 +1355,10 @@ class Pairadigm:
 
         if decision_col not in self.pairwise_df.columns:
             raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first.")
+        
+        # Change the name of decision_col to 'decision' for consistency
+        if decision_col != 'decision':
+            self.pairwise_df = self.pairwise_df.rename(columns={decision_col: 'decision'})
 
         # Calculate centrality based on parameter
         centrality_funcs = {
