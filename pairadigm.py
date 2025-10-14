@@ -24,52 +24,6 @@ from scipy.stats import ttest_1samp
 from typing import List, Dict, Any, Callable, Union, Tuple
 
 ##############################
-# Other functions
-##############################
-
-def pair_items(items, num_pairs_per_item=10, random_seed=42):
-        """
-        Generate a connected subset of pairwise comparisons as a DataFrame.
-        Args:
-            items (list): Items to compare.
-            num_pairs_per_item (int, optional): Min pairs per item.
-            random_seed (int, optional): For reproducibility.
-        Returns:
-            pd.DataFrame: DataFrame with columns ['item1', 'item2'] representing pairings.
-        """
-        if random_seed is not None:
-            random.seed(random_seed)
-
-        n = len(items)
-        if n < 2:
-            return pd.DataFrame(columns=['item1', 'item2'])
-        
-        min_pairs = num_pairs_per_item or max(3, min(6, int(n ** 0.5)))
-        all_pairs = set(itertools.combinations(items, 2))
-        chosen_pairs = set()
-        covered = {item: set() for item in items}
-
-        # Start with a spanning chain for connectivity
-        for i in range(n-1):
-            pair = tuple(sorted((items[i], items[i+1])))
-            chosen_pairs.add(pair)
-            covered[items[i]].add(items[i+1])
-            covered[items[i+1]].add(items[i])
-
-        # Sample additional pairs to ensure min_pairs per item
-        additional_pairs = list(all_pairs - chosen_pairs)
-        random.shuffle(additional_pairs)
-        for a,b in additional_pairs:
-            if len(covered[a]) < min_pairs or len(covered[b]) < min_pairs:
-                chosen_pairs.add((a,b))
-                covered[a].add(b)
-                covered[b].add(a)
-
-        # Convert to DataFrame
-        df = pd.DataFrame(list(chosen_pairs), columns=['item1', 'item2'])
-        return df
-
-##############################
 # LLMClient class
 ##############################
 
@@ -1578,3 +1532,94 @@ class Pairadigm:
         except Exception as e:
             raise IOError(f"Failed to load Pairadigm object: {e}")
         
+##############################
+# Other functions
+##############################
+
+def pair_items(items, num_pairs_per_item=10, random_seed=42):
+        """
+        Generate a connected subset of pairwise comparisons as a DataFrame.
+        Args:
+            items (list): Items to compare.
+            num_pairs_per_item (int, optional): Min pairs per item.
+            random_seed (int, optional): For reproducibility.
+        Returns:
+            pd.DataFrame: DataFrame with columns ['item1', 'item2'] representing pairings.
+        """
+        if random_seed is not None:
+            random.seed(random_seed)
+
+        n = len(items)
+        if n < 2:
+            return pd.DataFrame(columns=['item1', 'item2'])
+        
+        min_pairs = num_pairs_per_item or max(3, min(6, int(n ** 0.5)))
+        all_pairs = set(itertools.combinations(items, 2))
+        chosen_pairs = set()
+        covered = {item: set() for item in items}
+
+        # Start with a spanning chain for connectivity
+        for i in range(n-1):
+            pair = tuple(sorted((items[i], items[i+1])))
+            chosen_pairs.add(pair)
+            covered[items[i]].add(items[i+1])
+            covered[items[i+1]].add(items[i])
+
+        # Sample additional pairs to ensure min_pairs per item
+        additional_pairs = list(all_pairs - chosen_pairs)
+        random.shuffle(additional_pairs)
+        for a,b in additional_pairs:
+            if len(covered[a]) < min_pairs or len(covered[b]) < min_pairs:
+                chosen_pairs.add((a,b))
+                covered[a].add(b)
+                covered[b].add(a)
+
+        # Convert to DataFrame
+        df = pd.DataFrame(list(chosen_pairs), columns=['item1', 'item2'])
+        return df
+
+def load_pairadigm(filepath: str) -> Pairadigm:
+    """
+    Load a Pairadigm object from a pickle file.
+    
+    This is a standalone function that can be used to load saved Pairadigm objects
+    without needing to access the class method.
+    
+    Parameters
+    ----------
+    filepath : str
+        Path to the saved Pairadigm object file.
+        
+    Returns
+    -------
+    Pairadigm
+        The loaded Pairadigm object.
+        
+    Examples
+    --------
+    >>> from pairadigm import load_pairadigm
+    >>> pairadigm_obj = load_pairadigm('my_analysis.pkl')
+    """
+    filepath = Path(filepath)
+    
+    # Try adding .pkl extension if file not found
+    if not filepath.exists() and filepath.suffix != '.pkl':
+        filepath = filepath.with_suffix('.pkl')
+    
+    if not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    try:
+        with open(filepath, 'rb') as f:
+            obj = pickle.load(f)
+        
+        if not isinstance(obj, Pairadigm):
+            raise TypeError("Loaded object is not a Pairadigm instance")
+        
+        # Recreate the LLM client
+        obj.client = LLMClient(model_name=obj.model)
+        
+        print(f"Pairadigm object loaded successfully from: {filepath}")
+        return obj
+    except Exception as e:
+        raise IOError(f"Failed to load Pairadigm object: {e}")
