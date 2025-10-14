@@ -204,7 +204,7 @@ class LLMClient:
 class Pairadigm:
     def __init__(self, 
                  data: pd.DataFrame, 
-                 item_id_name: str,  
+                 item_id_name: Optional[str] = None,  
                  text_name: Optional[str] = None, 
                  paired: bool = False,
                  item_id_cols: Optional[List[str]] = None,
