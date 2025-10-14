@@ -1332,7 +1332,11 @@ class Pairadigm:
         else:
             fig.show()
 
-    def plot_comparison_network(self, centrality_measure='pagerank',return_fig=False):
+    def plot_comparison_network(
+            self, 
+            centrality_measure='pagerank',
+            decision_col='decision',
+            return_fig=False):
         """
         Plots a network graph of pairwise comparisons using Plotly.
 
@@ -1349,6 +1353,9 @@ class Pairadigm:
         if self.pairwise_df is None:
             raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
 
+        if decision_col not in self.pairwise_df.columns:
+            raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first.")
+
         # Calculate centrality based on parameter
         centrality_funcs = {
             'pagerank': nx.pagerank,
@@ -1359,8 +1366,6 @@ class Pairadigm:
             'degree': nx.degree_centrality
         }
 
-        
-        
         # Create a directed graph
         G = nx.DiGraph()
 
