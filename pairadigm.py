@@ -1318,11 +1318,13 @@ class Pairadigm:
         else:
             fig.show()
 
-    def plot_comparison_network(self, return_fig=False):
+    def plot_comparison_network(self, centrality_measure='pagerank',return_fig=False):
         """
         Plots a network graph of pairwise comparisons using Plotly.
 
         Args:
+            centrality_measure (str): Centrality measure to use. Options:
+                'pagerank', 'in_degree', 'out_degree', 'betweenness', 'eigenvector', 'degree'
             return_fig (bool): Whether to return the figure object instead of showing.
             
         Returns:
@@ -1333,6 +1335,18 @@ class Pairadigm:
         if self.pairwise_df is None:
             raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
 
+        # Calculate centrality based on parameter
+        centrality_funcs = {
+            'pagerank': nx.pagerank,
+            'in_degree': nx.in_degree_centrality,
+            'out_degree': nx.out_degree_centrality,
+            'betweenness': nx.betweenness_centrality,
+            'eigenvector': lambda G: nx.eigenvector_centrality(G, max_iter=1000),
+            'degree': nx.degree_centrality
+        }
+
+        
+        
         # Create a directed graph
         G = nx.DiGraph()
 
@@ -1348,9 +1362,14 @@ class Pairadigm:
 
         pos = nx.spring_layout(G, seed=42)  # For consistent layout
 
-        # Calculate centrality (using degree centrality here)
-        centrality = nx.degree_centrality(G)
+        # Calculate centrality
+            # centrality = nx.degree_centrality(G)
+            # node_color = [centrality[node] for node in G.nodes()]
+        centrality = centrality_funcs[centrality_measure](G)
         node_color = [centrality[node] for node in G.nodes()]
+        
+        if centrality_measure not in centrality_funcs:
+            raise ValueError(f"Unknown centrality measure: {centrality_measure}")
 
         edge_x = []
         edge_y = []
@@ -1377,6 +1396,7 @@ class Pairadigm:
             node_x.append(x)
             node_y.append(y)
 
+        colorbar_title = centrality_measure.replace('_', ' ').title()
         node_trace = go.Scatter(
             x=node_x, y=node_y,
             mode='markers',
@@ -1387,7 +1407,7 @@ class Pairadigm:
                 color=node_color,
                 size=10,
                 colorbar=dict(
-                    title='Centrality'
+                    title=colorbar_title
                 ),
                 line_width=2),
             text=[str(node) for node in G.nodes()]
