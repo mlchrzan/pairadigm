@@ -211,6 +211,7 @@ class Pairadigm:
                  item_text_cols: Optional[List[str]] = None,
                  annotated: bool = False,
                  annotator_cols: Optional[List[str]] = None,
+                 llm_annotator_cols: Optional[str] = None,
                  cgcot_prompts: Optional[List[str]] = None, 
                  model_name: str = 'gemini-2.0-flash-exp', 
                  api_key: Optional[str] = None, 
@@ -284,7 +285,7 @@ class Pairadigm:
                 
         # Make sure the necessary columns exist if the data is annotated
         if annotated:
-            if annotator_cols is None or len(annotator_cols) < 1:
+            if (annotator_cols is None and llm_annotator_cols is None) or (len(annotator_cols) + len(llm_annotator_cols)) < 1:
                 raise ValueError("For annotated data, annotator_cols must be a list of column names containing human annotations")
             for col in annotator_cols:
                 if col not in data.columns:
@@ -307,6 +308,7 @@ class Pairadigm:
         self.item_id_cols = item_id_cols
         self.item_text_cols = item_text_cols
         self.annotator_cols = annotator_cols
+        self.llm_annotator_cols = llm_annotator_cols
         self.cgcot_prompts = cgcot_prompts
         self.model = model_name
         self.target_concept = target_concept
@@ -736,6 +738,9 @@ class Pairadigm:
 
         if self.pairwise_df is None:
             raise ValueError("No pairwise_df found in the object. Generate pairings with breakdowns first using generate_pairings(breakdowns=True).")
+        
+        if 'breakdown1' not in self.pairwise_df.columns or 'breakdown2' not in self.pairwise_df.columns:
+            raise ValueError("pairwise_df must contain 'breakdown1' and 'breakdown2' columns. Generate breakdowns for paired items using generate_breakdowns_from_paired() first.")
 
         result_df = self.pairwise_df.copy()
         results = [None] * len(result_df)
@@ -909,6 +914,7 @@ class Pairadigm:
         
         # Generate annotations if not provided
         if llm_annotations is None or humans_annotations is None:
+            print("Generating annotations from stored object data...")
             generated_llm_annotations, generated_humans_annotations = self.prep_for_alt_test()
             
             if llm_annotations is None:
