@@ -21,6 +21,55 @@ import numpy as np
 from scipy.stats import ttest_1samp
 from typing import List, Dict, Any, Callable, Union, Tuple
 
+##############################
+# Other functions
+##############################
+
+def pair_items(items, num_pairs_per_item=10, random_seed=42):
+        """
+        Generate a connected subset of pairwise comparisons as a DataFrame.
+        Args:
+            items (list): Items to compare.
+            num_pairs_per_item (int, optional): Min pairs per item.
+            random_seed (int, optional): For reproducibility.
+        Returns:
+            pd.DataFrame: DataFrame with columns ['item1', 'item2'] representing pairings.
+        """
+        if random_seed is not None:
+            random.seed(random_seed)
+
+        n = len(items)
+        if n < 2:
+            return pd.DataFrame(columns=['item1', 'item2'])
+        
+        min_pairs = num_pairs_per_item or max(3, min(6, int(n ** 0.5)))
+        all_pairs = set(itertools.combinations(items, 2))
+        chosen_pairs = set()
+        covered = {item: set() for item in items}
+
+        # Start with a spanning chain for connectivity
+        for i in range(n-1):
+            pair = tuple(sorted((items[i], items[i+1])))
+            chosen_pairs.add(pair)
+            covered[items[i]].add(items[i+1])
+            covered[items[i+1]].add(items[i])
+
+        # Sample additional pairs to ensure min_pairs per item
+        additional_pairs = list(all_pairs - chosen_pairs)
+        random.shuffle(additional_pairs)
+        for a,b in additional_pairs:
+            if len(covered[a]) < min_pairs or len(covered[b]) < min_pairs:
+                chosen_pairs.add((a,b))
+                covered[a].add(b)
+                covered[b].add(a)
+
+        # Convert to DataFrame
+        df = pd.DataFrame(list(chosen_pairs), columns=['item1', 'item2'])
+        return df
+
+##############################
+# LLMClient class
+##############################
 
 class LLMClient:
     """
@@ -193,6 +242,9 @@ class LLMClient:
         )
         return response.content[0].text
     
+##############################
+# Pairadigm class
+############################## 
 class Pairadigm:
     def __init__(self, 
                  data: pd.DataFrame, 
