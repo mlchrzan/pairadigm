@@ -274,6 +274,13 @@ class Pairadigm:
             for col in item_text_cols:
                 if col not in data.columns:
                     raise ValueError(f"Column '{col}' not found in DataFrame")
+            # Change the name of the item_id_cols to item1 and item2 for consistency
+            if item_id_cols[0] != 'item1' or item_id_cols[1] != 'item2':
+                data = data.rename(columns={
+                    item_id_cols[0]: 'item1',
+                    item_id_cols[1]: 'item2'
+                })
+                item_id_cols = ['item1', 'item2']
                 
         # Make sure the necessary columns exist if the data is annotated
         if annotated:
@@ -1356,9 +1363,9 @@ class Pairadigm:
         if decision_col not in self.pairwise_df.columns:
             raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first.")
         
-        # Change the name of decision_col to 'decision' for consistency
+        # Turn decision_col to 'decision' for consistency below
         if decision_col != 'decision':
-            self.pairwise_df = self.pairwise_df.rename(columns={decision_col: 'decision'})
+            self.pairwise_df['decision'] = self.pairwise_df[decision_col]
 
         # Calculate centrality based on parameter
         centrality_funcs = {
@@ -1375,9 +1382,9 @@ class Pairadigm:
 
         # Add edges based on decisions
         for _, row in self.pairwise_df.iterrows():
-            if row['decision'] == 'Text1':
+            if row['decision'] == 'Text1' or row['decision'] == 0:
                 G.add_edge(row['item1'], row['item2'])
-            elif row['decision'] == 'Text2':
+            elif row['decision'] == 'Text2' or row['decision'] == 1:
                 G.add_edge(row['item2'], row['item1'])
 
         if len(G.nodes()) == 0:
