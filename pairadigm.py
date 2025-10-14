@@ -1,3 +1,10 @@
+# pairadigm.py
+# Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
+# UPCOMING FEATURES:
+# - Annotating with multiple LLMs for comparison
+# - Support for multiple concepts simultaneously
+# - Enhanced validation metrics and visualizations
+
 import pandas as pd
 import itertools
 import random
@@ -212,6 +219,7 @@ class Pairadigm:
                  annotated: bool = False,
                  annotator_cols: Optional[List[str]] = None,
                  llm_annotator_cols: Optional[str] = None,
+                 prior_breakdown_cols: Optional[List[str]] = None,
                  cgcot_prompts: Optional[List[str]] = None, 
                  model_name: str = 'gemini-2.0-flash-exp', 
                  api_key: Optional[str] = None, 
@@ -242,6 +250,10 @@ class Pairadigm:
             Whether the input data already contains human annotations
         annotator_cols : List[str], optional
             For annotated data, list of column names containing human annotations
+        llm_annotator_cols : List[str], optional
+            For annotated data, list of column names containing LLM annotations
+        prior_breakdown_cols : List[str], optional
+            For annotated data, list of column names containing prior LLM breakdowns of the text
         cgcot_prompts : List[str], optional
             CGCoT prompt templates for breakdowns
         model_name : str, default='gemini-2.0-flash-exp'
@@ -262,7 +274,7 @@ class Pairadigm:
                 raise ValueError(f"Column '{item_id_name}' not found in DataFrame")
             if text_name and text_name not in data.columns:
                 raise ValueError(f"Column '{text_name}' not found in DataFrame")
-            
+                    
         # Make sure the necessary columns exist if the data is paired
         if paired:
             if item_id_cols is None or len(item_id_cols) != 2:
@@ -301,6 +313,9 @@ class Pairadigm:
         if target_concept is None:
             raise ValueError("target_concept must be specified")
         
+        if prior_breakdown_cols is not None and len(prior_breakdown_cols) > 2:
+            raise ValueError("prior_breakdown_cols can contain at most 2 column names for paired data or 1 column for unpaired data")
+        
         self.data = data.copy()
         self.item_id_name = item_id_name
         self.text_name = text_name
@@ -310,9 +325,30 @@ class Pairadigm:
         self.item_text_cols = item_text_cols
         self.annotator_cols = annotator_cols
         self.llm_annotator_cols = llm_annotator_cols
+        self.prior_breakdown_cols = prior_breakdown_cols
         self.cgcot_prompts = cgcot_prompts
         self.model = model_name
         self.target_concept = target_concept
+
+        # Rename prior_breakdown_cols to breakdown1 and breakdown2 if paired (breakdown1 for unpaired)
+        if prior_breakdown_cols is not None:
+            if paired:
+                if len(prior_breakdown_cols) != 2:
+                    raise ValueError("For paired data, prior_breakdown_cols must contain exactly 2 column names")
+                if prior_breakdown_cols[0] != 'breakdown1' or prior_breakdown_cols[1] != 'breakdown2':
+                    self.data = self.data.rename(columns={
+                        prior_breakdown_cols[0]: 'breakdown1',
+                        prior_breakdown_cols[1]: 'breakdown2'
+                    })
+                    self.prior_breakdown_cols = ['breakdown1', 'breakdown2']
+            else:
+                if len(prior_breakdown_cols) != 1:
+                    raise ValueError("For unpaired data, prior_breakdown_cols must contain exactly 1 column name")
+                if prior_breakdown_cols[0] != 'breakdown1':
+                    self.data = self.data.rename(columns={
+                        prior_breakdown_cols[0]: 'breakdown1'
+                    })
+                    self.prior_breakdown_cols = ['breakdown1']
         
         # Initialize LLM client
         self.client = LLMClient(api_key=api_key, model_name=model_name)
@@ -1116,8 +1152,8 @@ class Pairadigm:
             # For paired data, collect unique items from both item ID columns
             item1_col, item2_col = self.item_id_cols
             all_items = pd.concat([
-                self.data[item1_col],
-                self.data[item2_col]
+                self.pairwise_df[item1_col],
+                self.pairwise_df[item2_col]
             ]).unique().tolist()
             item_to_idx = {item: idx for idx, item in enumerate(all_items)}
         else:
@@ -1154,24 +1190,47 @@ class Pairadigm:
         else:
             raise ValueError("normalization_scale must be 'zero-to-one', 'negative-one-to-one', or 'none'")
 
-        # Add scores to original DataFrame
-        scored_df = self.data.copy()
-        scored_df['Bradley_Terry_Score'] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
+        # Create scored DataFrame differently based on paired/unpaired data
+        if self.paired:
+            # For paired data, create a new DataFrame with unique items and their scores
+            scored_df = pd.DataFrame({
+                'item_id': list(item_to_idx.keys()),
+                'Bradley_Terry_Score': [bt_scores[item_to_idx[item]] for item in item_to_idx.keys()]
+            })
+        else:
+            # For unpaired data, add scores to original DataFrame
+            scored_df = self.data.copy()
+            scored_df['Bradley_Terry_Score'] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
 
         print(f"Bradley-Terry model fitted with {len(comparisons)} comparisons")
         print(f"Mean {self.target_concept} score: {scored_df['Bradley_Terry_Score'].mean():.3f}")
         print(f"Std {self.target_concept} score: {scored_df['Bradley_Terry_Score'].std():.3f}")
+
 
         # Update instance if requested
         if update_classObject:
             self.scored_df = scored_df
 
         if summarize:
-            summary = self.summarize_scores(df=scored_df, 
-                                            text_col=self.text_name, 
-                                            score_col='Bradley_Terry_Score')
-            for k, v in summary.items():
-                print(f"{k}: {v:.3f}")
+        # For paired data, we don't have text_col in scored_df, so skip summarize or handle differently
+            if self.paired:
+                print("\nSummary statistics:")
+                summary = {
+                    'mean': scored_df['Bradley_Terry_Score'].mean(),
+                    'median': scored_df['Bradley_Terry_Score'].median(),
+                    'std': scored_df['Bradley_Terry_Score'].std(),
+                    'min': scored_df['Bradley_Terry_Score'].min(),
+                    'max': scored_df['Bradley_Terry_Score'].max(),
+                    'count': scored_df['Bradley_Terry_Score'].count()
+                }
+                for k, v in summary.items():
+                    print(f"{k}: {v:.3f}")
+            else:
+                summary = self.summarize_scores(df=scored_df, 
+                                                text_col=self.text_name, 
+                                                score_col='Bradley_Terry_Score')
+                for k, v in summary.items():
+                    print(f"{k}: {v:.3f}")
 
         return scored_df
 
