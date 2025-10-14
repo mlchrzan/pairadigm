@@ -284,8 +284,9 @@ class Pairadigm:
                 item_id_cols = ['item1', 'item2']
                 
         # Make sure the necessary columns exist if the data is annotated
+        num_llm_annotators = len(llm_annotator_cols) if llm_annotator_cols else 0
         if annotated:
-            if (annotator_cols is None and llm_annotator_cols is None) or (len(annotator_cols) + len(llm_annotator_cols)) < 1:
+            if (annotator_cols is None and llm_annotator_cols is None) or (len(annotator_cols) + num_llm_annotators) < 1:
                 raise ValueError("For annotated data, annotator_cols must be a list of column names containing human annotations")
             for col in annotator_cols:
                 if col not in data.columns:
