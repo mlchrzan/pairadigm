@@ -1510,12 +1510,31 @@ class Pairadigm:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
         try:
+            # Temporarily remove unpicklable client object
+            client = self.client
+            self.client = None
+            
+            # Temporarily remove the api_key if it exists
+            if hasattr(self, 'api_key'):
+                api_key = self.api_key
+                self.api_key = None
+            else:
+                api_key = None
+
             with open(filepath, 'wb') as f:
                 pickle.dump(self, f)
+            
+            # Restore client
+            self.client = client
+            
             print(f"Pairadigm object saved successfully to: {filepath}")
         except Exception as e:
+            # Restore client even if save fails
+            self.client = client
+            if api_key is not None:
+                self.api_key = api_key
             raise IOError(f"Failed to save Pairadigm object: {e}")
-    
+
     @staticmethod
     def load(filepath: str) -> 'Pairadigm':
         """
@@ -1551,7 +1570,11 @@ class Pairadigm:
             if not isinstance(obj, Pairadigm):
                 raise TypeError("Loaded object is not a Pairadigm instance")
             
+            # Recreate the LLM client
+            obj.client = LLMClient(model_name=obj.model)
+            
             print(f"Pairadigm object loaded successfully from: {filepath}")
             return obj
         except Exception as e:
             raise IOError(f"Failed to load Pairadigm object: {e}")
+        
