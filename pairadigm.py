@@ -231,10 +231,16 @@ class Pairadigm:
             Column name for unique item identifiers
         text_name : str, optional
             Column name for item text/content
+        item_id_cols : List[str], optional
+            For paired data, list of two column names for the paired item IDs
+        item_text_cols : List[str], optional
+            For paired data, list of two column names for the paired item texts
         paired : bool, default=False
             Whether the input data is already paired
         annotated : bool, default=False
             Whether the input data already contains human annotations
+        annotator_cols : List[str], optional
+            For annotated data, list of column names containing human annotations
         cgcot_prompts : List[str], optional
             CGCoT prompt templates for breakdowns
         model_name : str, default='gemini-2.0-flash-exp'
@@ -250,7 +256,7 @@ class Pairadigm:
             raise TypeError("data must be a pandas DataFrame")
         
         # Make sure the necessary columns exist if the data is a list of items
-        if not paired or not annotated:
+        if not paired:
             if item_id_name not in data.columns:
                 raise ValueError(f"Column '{item_id_name}' not found in DataFrame")
             if text_name and text_name not in data.columns:
