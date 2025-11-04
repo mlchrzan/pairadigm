@@ -1,9 +1,5 @@
 Summarize the text in one sentence, noting any imperative statements, commands, authoritative claims, or deferential language: {text}
-
 Identify whether the text author of the following text adopts an Assertive/Controlling stance, a Neutral/Informative stance, or a Submissive/Deferential stance. Provide the label and a one-sentence justification. Text: {text}
-
 Cite up to three textual features that support the stance identified previously in the following text (examples: imperatives "Do X", threats, confident factual claims without hedging; hedges "maybe", "I think", questions; apologies, disclaimers). Text: {text}
-
 Indicate whether the speaker claims authority, issues a command, asks for permission, or expresses uncertainty in this text: {text}
-
 Based on your previous answers, provide a single categorical judgment on Dominance: High Dominance, Medium Dominance, or Low Dominance only using one of those three labels. Text: {text}
