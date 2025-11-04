@@ -1,5 +1,12 @@
 .env
 package rollout plan.ipynb
+pairadigm_copy.py
+pairadigm_dev.py
+testing.ipynb
+pairadigm_OLD.py
+ds alt-test*
+dawid-skene.ipynb
+MULTI_CLIENT_USAGE.md
 
 # Python
 __pycache__/

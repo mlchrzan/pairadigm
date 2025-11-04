@@ -4,17 +4,34 @@ A Python library for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
 
 ## Overview
 
-Pairadigm uses a multi-stage CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic) and includes validation tools for comparing LLM annotations against human judgments.
+Pairadigm uses a multi-stage CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic) and includes validation tools for comparing LLM annotations against human judgments. 
+
+You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
+
+## Updates for version 1.1.0 🎉
+
+- **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
+- **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
+- **Enhanced Validation**: 
+  - Dawid-Skene model implementation for annotator reliability estimation
+  - `dawid_skene_alt_test()` for weighted agreement testing
+  - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
+  - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
+- **Improved Multi-Model Workflows**: Test all LLMs at once with `test_all_llms=True` parameter
+- **Better Error Handling**: Enhanced validation and clearer error messages
 
 ## Features
 
 - **Multi-Provider LLM Support**: Works with Google Gemini, OpenAI GPT, and Anthropic Claude models
+- **Multiple LLM Annotations**: Use multiple models simultaneously for comparison and consensus
 - **Flexible Workflows**: Start with unpaired items, pre-paired data, or human-annotated comparisons
 - **CGCoT Breakdowns**: Generate concept-specific analyses using customizable prompt chains
 - **Automated Pairwise Comparison**: Parallel processing of comparisons with rate limiting
 - **Bradley-Terry Scoring**: Convert pairwise preferences into continuous scores
 - **Validation Tools**: 
   - ALT test for comparing LLM vs. human annotations
+  - Dawid-Skene model for annotator reliability estimation
+  - Inter-rater reliability (Cohen's/Fleiss' Kappa, Krippendorff's Alpha)
   - Transitivity checking for consistency validation
 - **Interactive Visualizations**: Distribution plots and network graphs using Plotly
 - **Save/Load Functionality**: Persist analysis state for reproducibility
@@ -36,7 +53,7 @@ cd pairadigm
 
 2. Install dependencies:
 ```bash
-pip install pandas numpy scipy plotly networkx choix python-dotenv google-genai
+pip install pandas numpy scipy plotly networkx choix python-dotenv google-genai statsmodels scikit-learn
 # Add openai and/or anthropic if using those providers:
 # pip install openai anthropic
 ```
@@ -56,7 +73,11 @@ echo "ANTHROPIC_API_KEY=your_anthropic_api_key_here" >> .env
 
 ## Quick Start
 
+Below are the basic workflows for using the package. You can find a full example of this in the jupyter notebook 
+
 ### Basic Workflow: Unpaired Items
+
+WARNING: If loading .txt files into CGCOT Prompts, ensure the .txt files do NOT have double spaces as these will be interpreted as an additional prompt.
 
 ```python
 import pandas as pd
@@ -101,6 +122,34 @@ p.plot_score_distribution()
 p.plot_comparison_network()
 ```
 
+### Using Multiple LLMs
+
+```python
+# Initialize with multiple models
+p = Pairadigm(
+    data=df,
+    item_id_name='id',
+    text_name='text',
+    cgcot_prompts=cgcot_prompts,
+    model_name=['gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4'],
+    target_concept='objectivity'
+)
+
+# View available clients
+print(p.get_clients_info())
+
+# Generate breakdowns with all models
+p.generate_breakdowns(max_workers=4)
+
+# Generate annotations with all models
+p.generate_pairwise_annotations(max_workers=4)
+
+# Score items for each model
+scored_df_gemini = p.score_items(decision_col='decision_gemini-2.0-flash-exp')
+scored_df_gpt = p.score_items(decision_col='decision_gpt-4o')
+scored_df_claude = p.score_items(decision_col='decision_claude-sonnet-4')
+```
+
 ### Working with Pre-Paired Data
 
 ```python
@@ -127,6 +176,30 @@ p.generate_breakdowns_from_paired(max_workers=4)
 # Continue with annotations and scoring...
 p.generate_pairwise_annotations()
 p.score_items()
+```
+
+### Adding Human Annotations
+
+```python
+# Create human annotation data
+human_anns = pd.DataFrame({
+    'item1': ['id1', 'id2'],
+    'item2': ['id2', 'id3'],
+    'annotator1': ['Text1', 'Text2'],
+    'annotator2': ['Text2', 'Text1']
+})
+
+# Add to existing Pairadigm object
+p.append_human_annotations(
+    annotations=human_anns,
+    decision_cols=['annotator1', 'annotator2']
+)
+
+# Or load from file
+p.append_human_annotations(
+    annotations='human_annotations.csv',
+    annotator_names=['expert1', 'expert2']
+)
 ```
 
 ### Validating Against Human Annotations
@@ -167,10 +240,30 @@ winning_rate, advantage_prob = p.alt_test(
 print(f"LLM winning rate: {winning_rate:.2%}")
 print(f"Advantage probability: {advantage_prob:.2%}")
 
+# Test all LLMs at once (if using multiple models)
+results = p.alt_test(test_all_llms=True)
+for model_name, (win_rate, adv_prob) in results.items():
+    print(f"{model_name}: Win Rate={win_rate:.2%}, Advantage={adv_prob:.2%}")
+
 # Check transitivity
 transitivity_results = p.check_transitivity()
 for annotator, (score, violations, total) in transitivity_results.items():
     print(f"{annotator}: {score:.2%} transitivity ({violations}/{total} violations)")
+
+# Calculate inter-rater reliability
+irr_results = p.irr(method='auto')
+print(irr_results)
+
+# Dawid-Skene validation (accounts for annotator reliability)
+ds_results = p.dawid_skene_alt_test(
+    alpha=0.05,
+    use_by_correction=True
+)
+print(f"Dawid-Skene Winning Rate: {ds_results['winning_rate']:.2%}")
+
+# Rank all annotators by reliability
+ranking = p.dawid_skene_annotator_ranking(random_seed=42)
+print(ranking[['annotator', 'reliability', 'rank', 'type']])
 ```
 
 ## CGCoT Prompts
@@ -182,14 +275,12 @@ CGCoT prompts are the backbone of Pairadigm's analysis. Design them to progressi
 ```python
 # prompts.txt format:
 # What factual claims are made in this text? {text}
-# ---
-# Based on: {previous_answers}
-# Are these claims supported by evidence?
-# ---
+# Based on: {text} Are these claims supported by evidence?
 # Does the language show emotional bias?
 
 p.set_cgcot_prompts('prompts.txt')
 ```
+WARNING: If loading .txt files into CGCOT Prompts, ensure the .txt files do NOT have double spaces as these will be interpreted as an additional prompt.
 
 ### Best Practices
 
@@ -246,19 +337,29 @@ p.generate_breakdowns(
 - `item_text_cols`: List of 2 text columns (paired data)
 - `annotated`: Whether data has human annotations
 - `annotator_cols`: List of human annotation columns
+- `llm_annotator_cols`: List of LLM annotation columns
+- `prior_breakdown_cols`: List of existing breakdown columns
 - `cgcot_prompts`: List of CGCoT prompt templates
-- `model_name`: LLM model identifier
+- `model_name`: LLM model identifier(s) - can be string or list of strings
 - `target_concept`: Concept being evaluated
+- `api_key`: API key(s) for LLM service(s) - can be string or list
+- `llm_clients`: Pre-initialized LLMClient(s) - alternative to model_name/api_key
 
 **Key Methods:**
 - `generate_breakdowns()`: Create CGCoT analyses for items
+- `generate_breakdowns_from_paired()`: Create breakdowns for paired data
 - `generate_pairings()`: Create pairwise combinations
 - `generate_pairwise_annotations()`: Run LLM comparisons
+- `append_human_annotations()`: Add human judgments to analysis
 - `score_items()`: Compute Bradley-Terry scores
 - `alt_test()`: Validate against human annotations
+- `dawid_skene_alt_test()`: Validate with annotator reliability weighting
+- `dawid_skene_annotator_ranking()`: Rank annotators by reliability
+- `irr()`: Calculate inter-rater reliability
 - `check_transitivity()`: Check annotation consistency
 - `plot_score_distribution()`: Visualize score distribution
 - `plot_comparison_network()`: Visualize comparison graph
+- `get_clients_info()`: View information about LLM clients
 
 ## Example Datasets
 
@@ -276,7 +377,7 @@ If you use Pairadigm in your research, please cite:
 ```bibtex
 @software{pairadigm2025,
   author = {Chrzan, M.L.},
-  title = {Pairadigm: Concept-Guided Chain-of-Thought Pairwise Annotation},
+  title = {pairadigm: Concept-Guided Chain-of-Thought Pairwise Annotation},
   year = {2025},
   url = {https://github.com/mlchrzan/pairadigm}
 }
@@ -302,7 +403,8 @@ For questions and issues:
 
 ## Upcoming Features
 
-- Multi-LLM comparison mode
-- Simultaneous evaluation of multiple concepts
-- Enhanced validation metrics
-- Additional visualization options
+- Enhanced validation metrics and visualizations (IN PROGRESS, recommendations welcome!)
+- Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
+- Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
+- Update Dawid-Skene methods to generate multiple runs to examine stability (for now, we recommend examining variance independently over multiple seeds)
+- Support for multiple concepts simultaneously (NOT STARTED)

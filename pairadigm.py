@@ -1,9 +1,13 @@
 # pairadigm.py
 # Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
-# UPCOMING FEATURES:
-# - Annotating with multiple LLMs for comparison
-# - Support for multiple concepts simultaneously
-# - Enhanced validation metrics and visualizations
+# Current version 1.1.0
+# UPCOMING FEATURES, listed in priority order:
+# - Annotating with multiple LLMs for comparison (COMPLETE)
+# - Enhanced validation metrics and visualizations (IN PROGRESS)
+# - Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
+# - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
+# - Update Dawid-Skene methods to generate multiple runs to examine stablity (for now, we recommend people examine variance independently over multiple seeds to check for stability)
+# - Support for multiple concepts simultaneously (NOT STARTED)
 
 import pandas as pd
 import itertools
@@ -115,7 +119,7 @@ class LLMClient:
             prompt: str,
             system_message: Optional[str] = None,
             temperature: float = 0.0,
-            max_tokens: int = 500) -> str:
+            max_tokens: int = 1000) -> str:
         """
         Generate text using the LLM.
         
@@ -175,15 +179,33 @@ class LLMClient:
             temperature: float,
             max_tokens: int) -> str:
         """Generate using OpenAI."""
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
+        
+        # Newer models use max_completion_tokens instead of max_tokens
+        newer_models = ['gpt-4-turbo', 'gpt-5', 'gpt-4o', 'gpt-5-nano', 'gpt-5-mini']
+        uses_completion_tokens = any(model in self.model_name.lower() for model in newer_models)
+        
+        # Some newer models don't support temperature parameter
+        models_no_temp_support = ['gpt-5-nano']
+        supports_temp = not any(model in self.model_name.lower() for model in models_no_temp_support)
+        
+        params = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt}
             ],
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        }
+        
+        # Only add temperature if supported
+        if supports_temp:
+            params["temperature"] = temperature
+        
+        if uses_completion_tokens:
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
+        
+        response = self.client.chat.completions.create(**params)
         return response.choices[0].message.content
     
     def _generate_anthropic(
@@ -221,9 +243,10 @@ class Pairadigm:
                  llm_annotator_cols: Optional[str] = None,
                  prior_breakdown_cols: Optional[List[str]] = None,
                  cgcot_prompts: Optional[List[str]] = None, 
-                 model_name: str = 'gemini-2.0-flash-exp', 
-                 api_key: Optional[str] = None, 
-                 target_concept: Optional[str] = None): 
+                 model_name: Optional[Union[str, List[str]]] = 'gemini-2.0-flash-exp', 
+                 api_key: Optional[Union[str, List[str]]] = None, 
+                 target_concept: Optional[str] = None,
+                 llm_clients: Optional[Union[LLMClient, List[LLMClient]]] = None): 
         """
         Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation.
         
@@ -249,19 +272,21 @@ class Pairadigm:
         annotated : bool, default=False
             Whether the input data already contains human annotations
         annotator_cols : List[str], optional
-            For annotated data, list of column names containing human annotations
+            For pre-annotated data, list of column names containing human annotations
         llm_annotator_cols : List[str], optional
-            For annotated data, list of column names containing LLM annotations
+            For pre-annotated data, list of column names containing LLM annotations
         prior_breakdown_cols : List[str], optional
-            For annotated data, list of column names containing prior LLM breakdowns of the text
+            For pre-annotated data, list of column names containing prior LLM breakdowns of the text
         cgcot_prompts : List[str], optional
             CGCoT prompt templates for breakdowns
-        model_name : str, default='gemini-2.0-flash-exp'
-            LLM model to use
-        api_key : str, optional
-            API key for LLM service
+        model_name : str or List[str], default='gemini-2.0-flash-exp'
+            LLM model(s) to use. Can be a single model name or a list of model names.
+        api_key : str or List[str], optional
+            API key(s) for LLM service(s). Can be a single key or a list of keys.
         target_concept : str, optional
             The concept to evaluate (e.g., "objectivity", "political bias")
+        llm_clients : LLMClient or List[LLMClient], optional
+            Pre-initialized LLMClient(s). If provided, model_name and api_key are ignored.
         """
         
         # Validate inputs
@@ -317,18 +342,28 @@ class Pairadigm:
             raise ValueError("prior_breakdown_cols can contain at most 2 column names for paired data or 1 column for unpaired data")
         
         self.data = data.copy()
+
         self.item_id_name = item_id_name
         self.text_name = text_name
+        
         self.paired = paired
-        self.annotated = annotated
         self.item_id_cols = item_id_cols
         self.item_text_cols = item_text_cols
+        
+        self.annotated = annotated
         self.annotator_cols = annotator_cols
+        
         self.llm_annotator_cols = llm_annotator_cols
+        self.llm_annotated = llm_annotator_cols is not None
+        # Initialize llm_annotator_cols as empty list if None
+        if self.llm_annotator_cols is None:
+            self.llm_annotator_cols = []
+
         self.prior_breakdown_cols = prior_breakdown_cols
+        
         self.cgcot_prompts = cgcot_prompts
-        self.model = model_name
         self.target_concept = target_concept
+        
 
         # Rename prior_breakdown_cols to breakdown1 and breakdown2 if paired (breakdown1 for unpaired)
         if prior_breakdown_cols is not None:
@@ -350,8 +385,42 @@ class Pairadigm:
                     })
                     self.prior_breakdown_cols = ['breakdown1']
         
-        # Initialize LLM client
-        self.client = LLMClient(api_key=api_key, model_name=model_name)
+        # Initialize LLM client(s)
+        if llm_clients is not None:
+            # Use provided client(s)
+            if isinstance(llm_clients, LLMClient):
+                self.clients = [llm_clients]
+            elif isinstance(llm_clients, list):
+                if not all(isinstance(c, LLMClient) for c in llm_clients):
+                    raise TypeError("All items in llm_clients must be LLMClient instances")
+                self.clients = llm_clients
+            else:
+                raise TypeError("llm_clients must be an LLMClient instance or a list of LLMClient instances")
+            # Extract model names from clients
+            self.model_names = [client.model_name for client in self.clients]
+        else:
+            # Create client(s) from model_name and api_key
+            if isinstance(model_name, str):
+                # Single model
+                self.clients = [LLMClient(api_key=api_key, model_name=model_name)]
+                self.model_names = [model_name]
+            elif isinstance(model_name, list):
+                # Multiple models
+                if isinstance(api_key, list):
+                    if len(api_key) != len(model_name):
+                        raise ValueError("If api_key is a list, it must have the same length as model_name")
+                    self.clients = [LLMClient(api_key=key, model_name=model) 
+                                  for model, key in zip(model_name, api_key)]
+                else:
+                    # Use same API key for all models
+                    self.clients = [LLMClient(api_key=api_key, model_name=model) 
+                                  for model in model_name]
+                self.model_names = model_name
+            else:
+                raise TypeError("model_name must be a string or a list of strings")
+        
+        # For backward compatibility, set self.client to the first client
+        self.client = self.clients[0]
         
         # Initialize result storage
         self.pairwise_df: Optional[pd.DataFrame] = None
@@ -407,6 +476,24 @@ class Pairadigm:
         else:
             raise TypeError("prompts must be either a list of strings or a file path string")
 
+    def get_clients_info(self) -> pd.DataFrame:
+        """
+        Get information about all LLM clients in this instance.
+        
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns: index, model_name, provider
+        """
+        info = []
+        for idx, client in enumerate(self.clients):
+            info.append({
+                'index': idx,
+                'model_name': client.model_name,
+                'provider': client.provider
+            })
+        return pd.DataFrame(info)
+
     def _validate_prompts(self, prompts: List[str]) -> bool:
         """
         Validate that prompts are properly formatted.
@@ -435,18 +522,240 @@ class Pairadigm:
         
         return True
 
+    def append_human_annotations(
+        self,
+        annotations: Union[pd.DataFrame, str],
+        annotator_names: Union[str, List[str], None] = None,
+        item1_col: str = 'item1',
+        item2_col: str = 'item2',
+        decision_cols: Optional[Union[str, List[str]]] = None, 
+        validate_items: bool = True,
+        overwrite: bool = False) -> None:
+
+        """
+        Upload human annotations to the Pairadigm object. Can handle single or multiple annotators.
+        
+        Parameters
+        ----------
+        annotations : pd.DataFrame or str
+            Either a DataFrame containing annotations or a filepath to a CSV/Excel file.
+            Must contain columns for item1, item2, and decision(s).
+        annotator_names : str, List[str], or None
+            Name(s) for annotator(s) (will be used as column name(s) in pairwise_df).
+            - If str: Single annotator name for single decision column
+            - If List[str]: Multiple annotator names for multiple decision columns
+            - If None: Will auto-detect decision columns and use them as annotator names
+        item1_col : str, default='item1'
+            Column name for first item in the pair
+        item2_col : str, default='item2'
+            Column name for second item in the pair
+        decision_cols : str, List[str], or None, optional
+            Column name(s) for annotation decision(s). Should contain values like:
+            'Text1', 'Text2', 0, 1, or similar.
+            - If str: Single decision column
+            - If List[str]: Multiple decision columns
+            - If None: Auto-detects columns starting with 'decision' or 'annotator'
+        validate_items : bool, default=True
+            Whether to validate that annotated items exist in pairwise_df
+        overwrite : bool, default=False
+            Whether to overwrite existing annotations for annotator(s)
+            
+        Raises
+        ------
+        ValueError
+            If required columns are missing, items don't match, or annotator already exists
+        TypeError
+            If annotations is not a DataFrame or valid filepath
+            
+        Examples
+        --------
+        >>> # Single annotator from DataFrame
+        >>> human_anns = pd.DataFrame({
+        ...     'item1': ['id1', 'id2'],
+        ...     'item2': ['id2', 'id3'],
+        ...     'decision': ['Text1', 'Text2']
+        ... })
+        >>> pairadigm_obj.append_human_annotations(
+        ...     human_anns, 
+        ...     annotator_names='annotator1'
+        ... )
+        
+        >>> # Multiple annotators from DataFrame
+        >>> multi_anns = pd.DataFrame({
+        ...     'item1': ['id1', 'id2'],
+        ...     'item2': ['id2', 'id3'],
+        ...     'annotator1': ['Text1', 'Text2'],
+        ...     'annotator2': ['Text2', 'Text1']
+        ... })
+        >>> pairadigm_obj.append_human_annotations(
+        ...     multi_anns,
+        ...     decision_cols=['annotator1', 'annotator2']
+        ... )
+        
+        >>> # Auto-detect annotators
+        >>> pairadigm_obj.append_human_annotations(multi_anns)
+        
+        >>> # From file
+        >>> pairadigm_obj.append_human_annotations(
+        ...     'annotations.csv',
+        ...     annotator_names='annotator2'
+        ... )
+        """
+        # Load annotations if filepath is provided
+        if isinstance(annotations, str):
+            filepath = Path(annotations)
+            if not filepath.exists():
+                raise FileNotFoundError(f"Annotation file not found: {filepath}")
+            
+            if filepath.suffix == '.csv':
+                annotations_df = pd.read_csv(filepath)
+            elif filepath.suffix in ['.xlsx', '.xls']:
+                annotations_df = pd.read_excel(filepath)
+            else:
+                raise ValueError(f"Unsupported file format: {filepath.suffix}. Use .csv or .xlsx")
+        elif isinstance(annotations, pd.DataFrame):
+            annotations_df = annotations.copy()
+        else:
+            raise TypeError("annotations must be a pandas DataFrame or a filepath string")
+        
+        # Check if pairwise_df exists
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise_df found. Generate pairings first using generate_pairings() or generate_pairwise_annotations()")
+        
+        # Auto-detect decision columns if not provided
+        if decision_cols is None:
+            # Look for columns that might contain decisions
+            candidate_cols = [col for col in annotations_df.columns 
+                            if col not in [item1_col, item2_col] and 
+                            (col.startswith('decision') or col.startswith('annotator') or 
+                             col.startswith('human'))]
+            if not candidate_cols:
+                raise ValueError("No decision columns found. Please specify decision_cols parameter.")
+            decision_cols = candidate_cols
+            print(f"Auto-detected decision columns: {decision_cols}")
+        
+        # Normalize decision_cols to list
+        if isinstance(decision_cols, str):
+            decision_cols = [decision_cols]
+        elif not isinstance(decision_cols, list):
+            raise TypeError("decision_cols must be a string, list of strings, or None")
+        
+        # Handle annotator_names
+        if annotator_names is None:
+            # Use decision column names as annotator names
+            annotator_names = decision_cols
+        elif isinstance(annotator_names, str):
+            annotator_names = [annotator_names]
+        elif not isinstance(annotator_names, list):
+            raise TypeError("annotator_names must be a string, list of strings, or None")
+        
+        # Validate lengths match
+        if len(annotator_names) != len(decision_cols):
+            raise ValueError(
+                f"Number of annotator_names ({len(annotator_names)}) must match "
+                f"number of decision_cols ({len(decision_cols)})"
+            )
+        
+        # Validate required columns
+        required_cols = [item1_col, item2_col] + decision_cols
+        missing_cols = [col for col in required_cols if col not in annotations_df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        # Check for existing annotators
+        if not overwrite:
+            existing = [name for name in annotator_names if name in self.pairwise_df.columns]
+            if existing:
+                raise ValueError(
+                    f"Annotator(s) {existing} already exist in pairwise_df. "
+                    "Set overwrite=True to replace existing annotations."
+                )
+        
+        # Standardize item column names
+        annotations_df = annotations_df.rename(columns={
+            item1_col: 'item1',
+            item2_col: 'item2'
+        })
+        
+        # Validate items if requested
+        if validate_items:
+            pairwise_items = set(self.pairwise_df['item1']).union(set(self.pairwise_df['item2']))
+            annotation_items = set(annotations_df['item1']).union(set(annotations_df['item2']))
+            
+            missing_items = annotation_items - pairwise_items
+            if missing_items:
+                warnings.warn(
+                    f"The following items in annotations are not in pairwise_df: {missing_items}. "
+                    "These annotations will be ignored."
+                )
+        
+        # Process each annotator
+        for annotator_name, decision_col in zip(annotator_names, decision_cols):
+            # Create a mapping from (item1, item2) pairs to decisions
+            annotation_map = {}
+            for _, row in annotations_df.iterrows():
+                key = (row['item1'], row['item2'])
+                annotation_map[key] = row[decision_col]
+                
+                # Also add reverse mapping for convenience
+                reverse_key = (row['item2'], row['item1'])
+                # Convert decision for reverse mapping
+                if row[decision_col] == 'Text1' or row[decision_col] == 0:
+                    reverse_decision = 'Text2' if row[decision_col] == 'Text1' else 1
+                elif row[decision_col] == 'Text2' or row[decision_col] == 1:
+                    reverse_decision = 'Text1' if row[decision_col] == 'Text2' else 0
+                else:
+                    reverse_decision = row[decision_col]  # Keep as is for other values
+                annotation_map[reverse_key] = reverse_decision
+            
+            # Map annotations to pairwise_df
+            def get_annotation(row):
+                key = (row['item1'], row['item2'])
+                return annotation_map.get(key, None)
+            
+            self.pairwise_df[annotator_name] = self.pairwise_df.apply(get_annotation, axis=1)
+            
+            # Update annotated status and annotator_cols
+            if not self.annotated:
+                self.annotated = True
+                self.annotator_cols = [annotator_name]
+            else:
+                if annotator_name not in self.annotator_cols:
+                    self.annotator_cols.append(annotator_name)
+                elif overwrite:
+                    # Already in list, just updated values
+                    pass
+            
+            # Report statistics for this annotator
+            non_null_count = self.pairwise_df[annotator_name].notna().sum()
+            total_pairs = len(self.pairwise_df)
+            coverage = non_null_count / total_pairs * 100
+            
+            print(f"Successfully uploaded annotations for '{annotator_name}'")
+            print(f"  Coverage: {non_null_count}/{total_pairs} pairs ({coverage:.1f}%)")
+
+        if self.item_id_cols is None:
+            self.item_id_cols = ['item1', 'item2']
+        
+        # Report overall statistics
+        print(f"\nHuman-annotated status: {self.annotated}")
+        print(f"Total annotators: {len(self.annotator_cols)}")
+
 ################################
 # GENERATE CGCOT BREAKDOWNS AND PAIRWISE ANNOTATIONS
 ################################
 
     def _generate_cgcot_breakdown(
             self,
-            text, 
+            text,
+            client: LLMClient,
             rate_limit_per_minute=None) -> str:
         """
         Generate concept-specific breakdown for a given text using CGCoT prompts.
         Args:
             text (str): The text to analyze.
+            client (LLMClient): The LLM client to use for generation.
+            rate_limit_per_minute (int, optional): Rate limit for API calls.
         Returns:
             str: Concatenated concept-specific breakdown
         """
@@ -459,10 +768,20 @@ class Pairadigm:
         
         for i, prompt_template in enumerate(self.cgcot_prompts):
             full_prompt = prompt_template.format(text=text, previous_answers="\n".join(prev_answers))
-            response = self.client.generate(
-                prompt=full_prompt,
-                temperature=0.0
-            )
+
+            # Ensure the prompt itself isn't empty
+            if not full_prompt.strip():
+                raise ValueError("ERROR: Empty prompt generated. Ensure the cgcot_prompts do not have empty lines.")
+            else:
+                try:
+                    response = client.generate(
+                        prompt=full_prompt,
+                        system_message="You are a precise and detail-oriented assistant who is CONCISE.",
+                        temperature=0.0
+                    )
+                except Exception as e:
+                    response = f"ERROR: {e}"
+
             prev_answers.append(response)
             breakdown.append(f"Prompt {i+1} response: {response}")
             
@@ -475,48 +794,98 @@ class Pairadigm:
             self,
             max_workers=8, 
             rate_limit_per_minute=None,
-            update_dataframe=True) -> Dict[Union[str, int], str]:
+            update_dataframe=True,
+            client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
         
         """
         Generate CGCoT breakdowns for all items in the DataFrame.
-        Args:
-            max_workers (int, optional): Number of parallel workers. Defaults to 8.
-            rate_limit_per_minute (int, optional): Rate limit for LLM calls.
-            update_dataframe (bool, optional): If True, adds breakdowns to self.data.
-        Returns:
-            Dict[Union[str, int], str]: Mapping of item IDs to breakdowns.
-            Also updates self.data with a new 'CGCoT_Breakdown' column if update_dataframe is True.
+        
+        Parameters
+        ----------
+        max_workers : int, default=8
+            Number of parallel workers
+        rate_limit_per_minute : int, optional
+            Rate limit for LLM calls
+        update_dataframe : bool, default=True
+            If True, adds breakdowns to self.data
+        client_indices : int or List[int], optional
+            Index/indices of client(s) to use. 
+            If None, uses all clients. If int, uses single client. If list, uses multiple clients.
+            
+        Returns
+        -------
+        Dict[Union[str, int], str]
+            Mapping of item IDs to breakdowns.
+            Also updates self.data with new 'CGCoT_Breakdown' column(s) if update_dataframe is True.
         """
 
         if self.paired:
             raise ValueError("Data is marked as paired. generate_breakdowns() should only be called on unpaired item lists. Use generate_breakdowns_from_paired() instead.")
 
-        results = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self._generate_cgcot_breakdown, 
-                    row[self.text_name],
-                    rate_limit_per_minute): row[self.item_id_name]
-                for _, row in self.data.iterrows()
-            }
-            for future in as_completed(futures):
-                uuid = futures[future]
-                try:
-                    results[uuid] = future.result()
-                except Exception as e:
-                    results[uuid] = f"ERROR: {e}"
+        # Determine which clients to use
+        if client_indices is None:
+            # Use all clients
+            clients_to_use = list(enumerate(self.clients))
+        elif isinstance(client_indices, int):
+            # Use single client
+            if client_indices >= len(self.clients):
+                raise ValueError(f"client_indices {client_indices} out of range. Only {len(self.clients)} client(s) available.")
+            clients_to_use = [(client_indices, self.clients[client_indices])]
+        elif isinstance(client_indices, list):
+            # Use specified clients
+            clients_to_use = []
+            for idx in client_indices:
+                if idx >= len(self.clients):
+                    raise ValueError(f"client_indices {idx} out of range. Only {len(self.clients)} client(s) available.")
+                clients_to_use.append((idx, self.clients[idx]))
+        else:
+            raise TypeError("client_indices must be None, int, or List[int]")
 
-        if update_dataframe:
-            self.data['CGCoT_Breakdown'] = self.data[self.item_id_name].map(results)
+        # Generate breakdowns for each client
+        all_results = {}
+        for client_idx, client in clients_to_use:
+            results = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._generate_cgcot_breakdown, 
+                        row[self.text_name],
+                        client,
+                        rate_limit_per_minute): row[self.item_id_name]
+                    for _, row in self.data.iterrows()
+                }
+                for future in as_completed(futures):
+                    uuid = futures[future]
+                    try:
+                        results[uuid] = future.result()
+                    except Exception as e:
+                        results[uuid] = f"ERROR: {e}"
+
+            if update_dataframe:
+                column_name = f'CGCoT_Breakdown_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown'
+                self.data[column_name] = self.data[self.item_id_name].map(results)
+            
+            all_results[client_idx] = results
     
-        return results
+        if update_dataframe:
+            print(f"Breakdowns added to self.data with column name(s): " +
+                  ", ".join(
+                      [f'CGCoT_Breakdown_{self.model_names[idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown' 
+                       for idx, _ in clients_to_use]
+                  ))
+            return None
+        
+        # Return results for single client if only one was used, otherwise return all
+        if len(clients_to_use) == 1:
+            return all_results[clients_to_use[0][0]]
+        return all_results
     
     def generate_breakdowns_from_paired(
             self, 
             max_workers: int = 8,
             rate_limit_per_minute: Optional[int] = None,
-            update_pairwise_df: bool = True) -> Dict[Union[str, int], str]:
+            update_pairwise_df: bool = True,
+            client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
         """
         Generate CGCoT breakdowns for all unique items in paired DataFrame.
         Assumes self.data/self.pairwise_df contains paired format with item1_id, item2_id, item1_text, item2_text columns.
@@ -529,6 +898,9 @@ class Pairadigm:
             Rate limit for LLM calls
         update_pairwise_df : bool, default=True
             If True, adds breakdown1 and breakdown2 columns to self.pairwise_df
+        client_indices : int or List[int], optional
+            Index/indices of client(s) to use. 
+            If None, uses all clients. If int, uses single client. If list, uses multiple clients.
             
         Returns
         -------
@@ -537,6 +909,25 @@ class Pairadigm:
         """
         if not self.paired:
             raise ValueError("Data is not marked as paired. generate_breakdowns_from_paired() should only be called on paired item lists.")
+
+        # Determine which clients to use
+        if client_indices is None:
+            # Use all clients
+            clients_to_use = list(enumerate(self.clients))
+        elif isinstance(client_indices, int):
+            # Use single client
+            if client_indices >= len(self.clients):
+                raise ValueError(f"client_indices {client_indices} out of range. Only {len(self.clients)} client(s) available.")
+            clients_to_use = [(client_indices, self.clients[client_indices])]
+        elif isinstance(client_indices, list):
+            # Use specified clients
+            clients_to_use = []
+            for idx in client_indices:
+                if idx >= len(self.clients):
+                    raise ValueError(f"client_indices {idx} out of range. Only {len(self.clients)} client(s) available.")
+                clients_to_use.append((idx, self.clients[idx]))
+        else:
+            raise TypeError("client_indices must be None, int, or List[int]")
 
         # Use pairwise_df if available, otherwise use self.data
         source_df = self.pairwise_df if self.pairwise_df is not None else self.data
@@ -571,36 +962,48 @@ class Pairadigm:
         # Create text mapping
         text_mapping = dict(zip(items_df[self.item_id_name], items_df['text']))
         
-        # Generate breakdowns for unique items
-        results = {}
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self._generate_cgcot_breakdown, 
-                    text_mapping[item_id],
-                    rate_limit_per_minute): item_id
-                for item_id in items_df[self.item_id_name]
-            }
+        # Generate breakdowns for each client
+        all_results = {}
+        for client_idx, client in clients_to_use:
+            results = {}
             
-            for future in as_completed(futures):
-                item_id = futures[future]
-                try:
-                    results[item_id] = future.result()
-                except Exception as e:
-                    results[item_id] = f"ERROR: {e}"
-        
-        # Update pairwise_df with breakdown columns if requested
-        if update_pairwise_df and self.pairwise_df is not None:
-            self.pairwise_df['breakdown1'] = self.pairwise_df[item1_id_col].map(results)
-            self.pairwise_df['breakdown2'] = self.pairwise_df[item2_id_col].map(results)
-        elif update_pairwise_df and self.pairwise_df is None:
-            # Create pairwise_df from self.data with breakdown columns
-            self.pairwise_df = source_df.copy()
-            self.pairwise_df['breakdown1'] = self.pairwise_df[item1_id_col].map(results)
-            self.pairwise_df['breakdown2'] = self.pairwise_df[item2_id_col].map(results)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._generate_cgcot_breakdown, 
+                        text_mapping[item_id],
+                        client,
+                        rate_limit_per_minute): item_id
+                    for item_id in items_df[self.item_id_name]
+                }
+                
+                for future in as_completed(futures):
+                    item_id = futures[future]
+                    try:
+                        results[item_id] = future.result()
+                    except Exception as e:
+                        results[item_id] = f"ERROR: {e}"
+            
+            # Update pairwise_df with breakdown columns if requested
+            if update_pairwise_df:
+                breakdown1_col = f'breakdown1_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'breakdown1'
+                breakdown2_col = f'breakdown2_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'breakdown2'
+                
+                if self.pairwise_df is not None:
+                    self.pairwise_df[breakdown1_col] = self.pairwise_df[item1_id_col].map(results)
+                    self.pairwise_df[breakdown2_col] = self.pairwise_df[item2_id_col].map(results)
+                else:
+                    # Create pairwise_df from self.data with breakdown columns
+                    self.pairwise_df = source_df.copy()
+                    self.pairwise_df[breakdown1_col] = self.pairwise_df[item1_id_col].map(results)
+                    self.pairwise_df[breakdown2_col] = self.pairwise_df[item2_id_col].map(results)
+            
+            all_results[client_idx] = results
 
-        return results
+        # Return results for single client if only one was used, otherwise return all
+        if len(clients_to_use) == 1:
+            return all_results[clients_to_use[0][0]]
+        return all_results
 
     # Helper function to create pairings ensuring connectivity and minimum pairs per item
     @staticmethod
@@ -669,19 +1072,43 @@ class Pairadigm:
             num_pairs_per_item,
             random_seed)
         
+        # Set item_id_cols since data is now paired
+        self.item_id_cols = ['item1', 'item2']
+        
         # Map breakdowns to pairings if present
         if breakdowns:
 
-            if "CGCoT_Breakdown" not in self.data.columns:
-                raise ValueError("Column 'CGCoT_Breakdown' not found in DataFrame. Generate them using generate_breakdowns() first.")
+            # Find any CGCoT breakdown columns. These may be named either
+            # 'CGCoT_Breakdown' (single-client) or 'CGCoT_Breakdown_<model_name>'
+            breakdown_cols = [c for c in self.data.columns if c.startswith('CGCoT_Breakdown')]
+            if len(breakdown_cols) == 0:
+                raise ValueError("No 'CGCoT_Breakdown' columns found in DataFrame. Generate them using generate_breakdowns() first.")
 
-            uuid_to_desc = dict(zip(self.data[self.item_id_name], self.data['CGCoT_Breakdown']))
-            uuid_pairings['breakdown1'] = uuid_pairings['item1'].map(uuid_to_desc)
-            uuid_pairings['breakdown2'] = uuid_pairings['item2'].map(uuid_to_desc)
+            # Create mapping from UUID to each breakdown column and attach to pairings
+            for col in breakdown_cols:
+                uuid_to_desc = dict(zip(self.data[self.item_id_name], self.data[col]))
+
+                # If column is the generic name, create 'breakdown1'/'breakdown2'
+                if col == 'CGCoT_Breakdown':
+                    uuid_pairings['breakdown1'] = uuid_pairings['item1'].map(uuid_to_desc)
+                    uuid_pairings['breakdown2'] = uuid_pairings['item2'].map(uuid_to_desc)
+                else:
+                    # Column name format is expected to be 'CGCoT_Breakdown_<model_name>'
+                    # Keep the model_name suffix exactly as in the column to preserve downstream naming
+                    suffix = col[len('CGCoT_Breakdown_'):]
+                    uuid_pairings[f'breakdown1_{suffix}'] = uuid_pairings['item1'].map(uuid_to_desc)
+                    uuid_pairings[f'breakdown2_{suffix}'] = uuid_pairings['item2'].map(uuid_to_desc)
 
             if update_classObject:
                 self.pairwise_df = uuid_pairings
-
+                # self.paired = True
+                print(f"Pairwise DataFrame with breakdowns created and stored in self.pairwise_df")
+        else:
+            if update_classObject:
+                self.pairwise_df = uuid_pairings
+                # self.paired = True
+                print(f"Pairwise DataFrame created and stored in self.pairwise_df")
+        
         return uuid_pairings
 
     # Helper function to compare two breakdowns
@@ -717,9 +1144,6 @@ class Pairadigm:
             system_message="You are a precise and detail-oriented assistant.",
             temperature=0.0
         )
-
-        # response = query_llm(comparison_prompt, model=model, 
-        #                     system_message="You are a precise and detail-oriented assistant.")
         
         # Use regex to extract the final answer
         answer_pattern = r"FINAL ANSWER:\s*(Description 1|Description 2|Tie)"
@@ -732,7 +1156,7 @@ class Pairadigm:
             elif extracted_answer.lower() == "description 2":
                 final_answer = "Text2"
             else:
-                final_answer = "ERROR"
+                final_answer = f"ERROR from pairadigm (not model): Regex match found but final answer did not include Text1 or Text2. Model response: {response}"
         else:
             # If regex fails, fallback to a direct extraction prompt
             extraction_prompt = f"""
@@ -745,9 +1169,6 @@ class Pairadigm:
                 temperature=0.0
             )
 
-            # extracted_answer = query_llm(extraction_prompt, 
-            #                             model=model, 
-            #                             system_message="You are a precise and detail-oriented assistant.")
             extracted_answer = extracted_answer.strip()
 
             if extracted_answer == "Description 1":
@@ -755,62 +1176,104 @@ class Pairadigm:
             elif extracted_answer == "Description 2":
                 final_answer = "Text2"
             else:
-                final_answer = "ERROR"
+                final_answer = f"ERROR from pairadigm (not model): Regex match NOT found even after recalling the model with an extraction prompt. Model response: {response}"
 
         return final_answer, response
 
     def generate_pairwise_annotations(
         self,
         max_workers=8,
-        update_classObject=True) -> pd.DataFrame:
+        update_classObject=True,
+        client_indices: Optional[Union[int, List[int]]] = None) -> pd.DataFrame:
         """
         Run pairwise comparisons on all pairs in the pairwise_df DataFrame in parallel.
         
         Args:
             max_workers (int): Number of threads to use
             update_classObject (bool, optional): If True, updates self.pairwise_df with results. Defaults to True.
+            client_indices (int or List[int], optional): Index/indices of client(s) to use. 
+                If None, uses all clients. If int, uses single client. If list, uses multiple clients.
         Returns:
             pd.DataFrame: Original dataframe with added 'decision' and 'justification' columns
+                (or multiple columns if using multiple clients)
         """
 
         if self.pairwise_df is None:
             raise ValueError("No pairwise_df found in the object. Generate pairings with breakdowns first using generate_pairings(breakdowns=True).")
         
-        if 'breakdown1' not in self.pairwise_df.columns or 'breakdown2' not in self.pairwise_df.columns:
-            raise ValueError("pairwise_df must contain 'breakdown1' and 'breakdown2' columns. Generate breakdowns for paired items using generate_breakdowns_from_paired() first.")
+        # Determine which clients to use
+        if client_indices is None:
+            # Use all clients
+            clients_to_use = list(enumerate(self.clients))
+        elif isinstance(client_indices, int):
+            # Use single client
+            if client_indices >= len(self.clients):
+                raise ValueError(f"client_indices {client_indices} out of range. Only {len(self.clients)} client(s) available.")
+            clients_to_use = [(client_indices, self.clients[client_indices])]
+        elif isinstance(client_indices, list):
+            # Use specified clients
+            clients_to_use = []
+            for idx in client_indices:
+                if idx >= len(self.clients):
+                    raise ValueError(f"client_indices {idx} out of range. Only {len(self.clients)} client(s) available.")
+                clients_to_use.append((idx, self.clients[idx]))
+        else:
+            raise TypeError("client_indices must be None, int, or List[int]")
 
         result_df = self.pairwise_df.copy()
-        results = [None] * len(result_df)
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self.pairwise_compare, 
-                    row['breakdown1'], 
-                    row['breakdown2'], 
-                    self.target_concept,
-                    self.client
-                ): idx
-                for idx, row in result_df.iterrows()
-            }
-            for i, future in enumerate(as_completed(futures)):
-                idx = futures[future]
-                try:
-                    decision, justification = future.result()
-                except Exception as e:
-                    decision, justification = "ERROR", str(e)
-                results[idx] = (decision, justification)
-                
-                # Print progress every 50 iterations
-                if (i + 1) % 50 == 0:
-                    print(f"Completed {i + 1}/{len(result_df)} comparisons")
-        
-        result_df['decision'] = [r[0] for r in results]
-        result_df['justification'] = [r[1] for r in results]
+        # For each client, generate annotations
+        for client_idx, client in clients_to_use:
+            # Determine breakdown column names
+            if len(self.clients) > 1:
+                breakdown1_col = f'breakdown1_{self.model_names[client_idx]}'
+                breakdown2_col = f'breakdown2_{self.model_names[client_idx]}'
+                decision_col = f'decision_{self.model_names[client_idx]}'
+                justification_col = f'justification_{self.model_names[client_idx]}'
+            else:
+                breakdown1_col = 'breakdown1'
+                breakdown2_col = 'breakdown2'
+                decision_col = 'decision'
+                justification_col = 'justification'
+            
+            # Check if breakdown columns exist
+            if breakdown1_col not in result_df.columns or breakdown2_col not in result_df.columns:
+                raise ValueError(f"Breakdown columns '{breakdown1_col}' and '{breakdown2_col}' not found. Generate breakdowns for paired items using generate_breakdowns_from_paired(client_index={client_idx}) first.")
+            
+            results = [None] * len(result_df)
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self.pairwise_compare, 
+                        row[breakdown1_col], 
+                        row[breakdown2_col], 
+                        self.target_concept,
+                        client
+                    ): idx
+                    for idx, row in result_df.iterrows()
+                }
+                for i, future in enumerate(as_completed(futures)):
+                    idx = futures[future]
+                    try:
+                        decision, justification = future.result()
+                    except Exception as e:
+                        decision, justification = "ERROR", str(e)
+                    results[idx] = (decision, justification)
+                    
+                    # Print progress every 50 iterations
+                    if (i + 1) % 50 == 0:
+                        model_name = self.model_names[client_idx] if len(self.clients) > 1 else "default"
+                        print(f"[{model_name}] Completed {i + 1}/{len(result_df)} comparisons")
+            
+            result_df[decision_col] = [r[0] for r in results]
+            result_df[justification_col] = [r[1] for r in results]
+            self.llm_annotator_cols.append(decision_col)
         
         # Update instance if requested
         if update_classObject:
             self.pairwise_df = result_df
+            self.llm_annotated = True
         
         return result_df
 
@@ -866,24 +1329,62 @@ class Pairadigm:
         return ttest_1samp(indicators, epsilon, alternative='less').pvalue
     
     # Function to turn the annotations into a dictionary ready for alt_test
-    def prep_for_alt_test(self) -> Tuple[Dict[Union[int, str], Any], 
-                                         Dict[Union[int, str], 
-                                              Dict[Union[int, str], Any]]]:
+    def prep_for_alt_test(
+        self,
+        llm_decision_col: Optional[str] = None
+    ) -> Tuple[Dict[Union[int, str], Any], Dict[Union[int, str], Dict[Union[int, str], Any]]]:
         """
         Prepare annotations from class data for alt_test function.
         
-        Returns:
-            Tuple[Dict[Union[int, str], Any], Dict[Union[int, str], Dict[Union[int, str], Any]]]: 
-                (llm_annotations, humans_annotations)
+        Args
+        ----------
+        llm_decision_col : str, optional
+            Specific LLM decision column to use. If None and only one LLM was used,
+            uses 'decision'. If multiple LLMs were used, this parameter is required.
+            Format: 'decision' or 'decision_<model_name>'
+        
+        Returns
+        -------
+        Tuple[Dict[Union[int, str], Any], Dict[Union[int, str], Dict[Union[int, str], Any]]]
+            (llm_annotations, humans_annotations)
+        
+        Raises
+        ------
+        ValueError
+            If multiple LLM annotators exist but llm_decision_col is not specified
         """
         if not self.annotated:
-            raise ValueError("Data must be annotated (annotated=True) to prepare for alt_test")
+            raise ValueError("Data must have human annotations to run the alt_test")
         
         if self.pairwise_df is None:
-            raise ValueError("No pairwise comparison data found. Run pairwise annotations first.")
+            raise ValueError("No pairwise comparison data found. Run generate_pairwise_annotations() first.")
         
-        if 'decision' not in self.pairwise_df.columns:
-            raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first.")
+        # Determine which decision column to use
+        if llm_decision_col is None:
+            # Check if there are multiple LLM decision columns
+            decision_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+            
+            if len(decision_cols) == 0:
+                raise ValueError("No 'decision' columns found. Run generate_pairwise_annotations() first.")
+            elif len(decision_cols) == 1:
+                llm_decision_col = decision_cols[0]
+            else:
+                # Multiple LLM annotators found
+                available_models = [col.replace('decision_', '') for col in decision_cols if col != 'decision']
+                if 'decision' in decision_cols:
+                    available_models.insert(0, 'decision (default)')
+                raise ValueError(
+                    f"Multiple LLM decision columns found: {decision_cols}. "
+                    f"Please specify which one to use via llm_decision_col parameter. "
+                    f"Available models: {available_models}"
+                )
+        else:
+            # Validate the specified column exists
+            if llm_decision_col not in self.pairwise_df.columns:
+                raise ValueError(
+                    f"Column '{llm_decision_col}' not found in pairwise_df. "
+                    f"Available columns: {list(self.pairwise_df.columns)}"
+                )
         
         # Use class attributes for column names
         item1_id_col, item2_id_col = self.item_id_cols
@@ -894,7 +1395,7 @@ class Pairadigm:
         for _, row in self.pairwise_df.iterrows():
             item1_id = row[item1_id_col]
             item2_id = row[item2_id_col]
-            decision = row['decision']
+            decision = row[llm_decision_col]
             
             # Process LLM annotations
             if decision == 'Text1':
@@ -921,6 +1422,7 @@ class Pairadigm:
                 else:
                     continue
         
+        print(f"Using LLM decision column: {llm_decision_col}")
         return llm_annotations, humans_annotations
 
     def alt_test(
@@ -928,38 +1430,77 @@ class Pairadigm:
         llm_annotations: Optional[Dict[Union[int, str], Any]] = None,
         humans_annotations: Optional[Dict[Union[int, str], Dict[Union[int, str], Any]]] = None,
         scoring_function: Union[str, Callable] = 'accuracy',
-        epsilon: float = 0.1, # Value which the authors claim as an adjustment for cost of well-trained annotators
+        epsilon: float = 0.1,
         q_fdr: float = 0.05,
         min_humans_per_instance: int = 2,
-        min_instances_per_human: int = 30):
-    
+        min_instances_per_human: int = 30,
+        llm_decision_col: Optional[str] = None,
+        test_all_llms: bool = False) -> Union[Tuple[float, float], Dict[str, Tuple[float, float]]]:
         """
-        Perform the alternative hypothesis test to compare LLM annotations against human annotations.
+        Perform the alternative annotator test to compare LLM annotations against human annotations.
+        
         Args:
             llm_annotations (Optional[Dict[Union[int, str], Any]]): Mapping of instance IDs to LLM annotations. 
-                If None, will be generated using the provided data for the instance and the prep_for_alt_test().
-            humans_annotations (Optional[Dict[Union[int, str], Dict[Union[int, str], Any]]]): Mapping of human IDs to their annotations 
-                (which are mappings of instance IDs to annotations). If None, will be generated using prep_for_alt_test().
+                If None, will be generated using prep_for_alt_test().
+            humans_annotations (Optional[Dict[Union[int, str], Dict[Union[int, str], Any]]]): Mapping of human IDs to their annotations. 
+                If None, will be generated using prep_for_alt_test().
             scoring_function (Union[str, Callable], optional): Scoring function to use ('accuracy', 'neg_rmse', or custom). Defaults to 'accuracy'.
             epsilon (float, optional): Adjustment value for t-test. Defaults to 0.1.
-            q_fdr (float, optional): FDR level for BY procedure. Defaults to 0.05. Stands for False Discovery Rate.
+            q_fdr (float, optional): FDR level for BY procedure. Defaults to 0.05.
             min_humans_per_instance (int, optional): Minimum annotators per instance to include. Defaults to 2.
             min_instances_per_human (int, optional): Minimum instances per annotator to include. Defaults to 30.
+            llm_decision_col (str, optional): Specific LLM decision column to test. Format: 'decision' or 'decision_<model_name>'.
+                If None and test_all_llms=False, will use single 'decision' column or raise error if multiple exist.
+            test_all_llms (bool, optional): If True, tests all LLM decision columns and returns dict of results. Defaults to False.
+        
         Returns:
-            Tuple[float, float]: (winning_rate, advantage_prob)
+            Union[Tuple[float, float], Dict[str, Tuple[float, float]]]: 
+                If test_all_llms=False: (winning_rate, advantage_prob) for single LLM
+                If test_all_llms=True: Dict mapping model names to (winning_rate, advantage_prob)
         """
         
-        # Generate annotations if not provided
-        if llm_annotations is None or humans_annotations is None:
-            print("Generating annotations from stored object data...")
-            generated_llm_annotations, generated_humans_annotations = self.prep_for_alt_test()
-            
-            if llm_annotations is None:
-                llm_annotations = generated_llm_annotations
-            if humans_annotations is None:
-                humans_annotations = generated_humans_annotations
+        # Validate that we have human annotations
+        if not self.annotated:
+            raise ValueError("Data must have human annotations to run the alt_test")
         
-        # prepare alignment scoring function
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise comparison data found. Run generate_pairwise_annotations() first.")
+        
+        # Find all available decision columns
+        decision_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+        
+        if len(decision_cols) == 0:
+            raise ValueError("No 'decision' columns found. Run generate_pairwise_annotations() first.")
+        
+        # Determine which columns to test
+        if test_all_llms:
+            # Test all available LLM decision columns
+            cols_to_test = decision_cols
+            print(f"Testing all {len(cols_to_test)} LLM decision columns: {cols_to_test}")
+        else:
+            # Test single column
+            if llm_decision_col is None:
+                if len(decision_cols) == 1:
+                    cols_to_test = [decision_cols[0]]
+                else:
+                    available_models = [col.replace('decision_', '') for col in decision_cols if col != 'decision']
+                    if 'decision' in decision_cols:
+                        available_models.insert(0, 'decision (default)')
+                    raise ValueError(
+                        f"Multiple LLM decision columns found: {decision_cols}. "
+                        f"Please specify which one to use via llm_decision_col parameter, "
+                        f"or set test_all_llms=True to test all. "
+                        f"Available models: {available_models}"
+                    )
+            else:
+                if llm_decision_col not in self.pairwise_df.columns:
+                    raise ValueError(
+                        f"Column '{llm_decision_col}' not found in pairwise_df. "
+                        f"Available columns: {list(self.pairwise_df.columns)}"
+                    )
+                cols_to_test = [llm_decision_col]
+        
+        # Prepare alignment scoring function
         if isinstance(scoring_function, str):
             if scoring_function == 'accuracy':
                 scoring_function = self.accuracy
@@ -967,53 +1508,391 @@ class Pairadigm:
                 scoring_function = self.neg_rmse
             else:
                 raise ValueError("Unknown scoring function")
+        
+        # Get human annotations once (shared across all LLM tests)
+        if humans_annotations is None:
+            _, humans_annotations = self.prep_for_alt_test(llm_decision_col=cols_to_test[0])
+        
+        # Store results for each LLM
+        results = {}
+        
+        # Test each LLM decision column
+        for col in cols_to_test:
+            # Get LLM annotations for this column
+            if llm_annotations is None or test_all_llms:
+                llm_anns, _ = self.prep_for_alt_test(llm_decision_col=col)
+            else:
+                llm_anns = llm_annotations
+            
+            # Prepare sets - i_set has humans as keys, h_set has instances as keys
+            i_set, h_set = {}, {}
+            for h, anns in humans_annotations.items():
+                i_set[h] = list(anns.keys())
+                for i, ann in anns.items():
+                    if i not in h_set:
+                        h_set[i] = []
+                    h_set[i].append(h)
+
+            # Remove instances with less than min_humans_per_instance
+            instances_to_keep = {i for i in h_set if len(h_set[i]) >= min_humans_per_instance and i in llm_anns}
+            if len(instances_to_keep) < len(h_set):
+                print(f"[{col}] Dropped {len(h_set) - len(instances_to_keep)} instances with less than {min_humans_per_instance} annotators.")
+            i_set = {h: [i for i in i_set[h] if i in instances_to_keep] for h in i_set}
+            h_set = {i: h_set[i] for i in h_set if i in instances_to_keep}
+
+            p_values, advantage_probs, humans = [], [], []
+            for excluded_h in humans_annotations:
+                llm_indicators = []
+                excluded_indicators = []
+                instances = [i for i in i_set[excluded_h] if i in llm_anns]
+                if len(instances) < min_instances_per_human:
+                    print(f"[{col}] Skipping annotator {excluded_h} with only {len(instances)} instances < {min_instances_per_human}.")
+                    continue
+
+                for i in instances:
+                    human_ann = humans_annotations[excluded_h][i]
+                    llm_ann = llm_anns[i]
+                    remaining_anns = [humans_annotations[h][i] for h in h_set[i] if h != excluded_h]
+                    human_score = scoring_function(human_ann, remaining_anns)
+                    llm_score = scoring_function(llm_ann, remaining_anns)
+                    llm_indicators.append(1 if llm_score >= human_score else 0)
+                    excluded_indicators.append(1 if human_score >= llm_score else 0)
+
+                diff_indicators = [exc_ind - llm_ind for exc_ind, llm_ind in zip(excluded_indicators, llm_indicators)]
+                p_values.append(self.ttest(diff_indicators, epsilon))
+                advantage_probs.append(float(np.mean(llm_indicators)))
+                humans.append(excluded_h)
+
+            rejected_indices = self.by_procedure(p_values, q_fdr)
+            advantage_prob = float(np.mean(advantage_probs))
+            winning_rate = len(rejected_indices) / len(humans) if len(humans) > 0 else 0.0
+            
+            # Store results
+            model_name = col.replace('decision_', '') if col != 'decision' else 'default'
+            results[model_name] = (winning_rate, advantage_prob)
+            
+            # Print results for this LLM
+            print(f"\n{'='*70}")
+            print(f"ALT-TEST RESULTS - {model_name.upper()}")
+            print(f"{'='*70}")
+            print(f"Winning Rate (ω): {winning_rate:.3f}")
+            print(f"Advantage Probability: {advantage_prob:.3f}")
+            print(f"Tested against {len(humans)} human annotators")
+            print(f"{'='*70}\n")
+        
+        # Return single tuple if testing one LLM, dict if testing multiple
+        if len(results) == 1:
+            return list(results.values())[0]
         else:
-            scoring_function = scoring_function
+            return results
 
-        # prepare sets - i_set has humans as keys, h_set has instances as keys
-        i_set, h_set = {}, {}
-        for h, anns in humans_annotations.items():
-            i_set[h] = list(anns.keys())
-            for i, ann in anns.items():
-                if i not in h_set:
-                    h_set[i] = []
-                h_set[i].append(h)
+    def dawid_skene_alt_test(
+        self,
+        decision_col: Optional[str] = None,
+        num_classes: int = 2,
+        max_iter: int = 1000,
+        tol: float = 1e-6,
+        random_seed: Optional[int] = None,
+        alpha: float = 0.05,
+        use_by_correction: bool = True,
+        test_all_llms: bool = False) -> Union[Dict, Dict[str, Dict]]:
+        """
+        Perform Dawid-Skene validation comparing LLM annotations against human annotators.
+        
+        This method implements the Dawid-Skene model to estimate annotator reliability,
+        then computes weighted agreement margins and performs statistical testing with
+        optional Benjamini-Yekutieli FDR correction.
+        
+        Parameters
+        ----------
+        decision_col : str, optional
+            Column name containing LLM decisions. Format: 'decision' or 'decision_<model_name>'.
+            If None and test_all_llms=False, will use single 'decision' column or raise error if multiple exist.
+        num_classes : int, default=2
+            Number of classes (e.g., 2 for binary Text1/Text2)
+        max_iter : int, default=100
+            Maximum iterations for Dawid-Skene EM algorithm
+        tol : float, default=1e-6
+            Convergence tolerance for Dawid-Skene
+        alpha : float, default=0.05
+            Significance level for hypothesis testing
+        use_by_correction : bool, default=True
+            Whether to apply Benjamini-Yekutieli FDR correction
+        test_all_llms : bool, default=False
+            If True, tests all LLM decision columns and returns dict of results
+            
+        Returns
+        -------
+        Union[Dict, Dict[str, Dict]]
+            If test_all_llms=False: Single dict with results for one LLM
+            If test_all_llms=True: Dict mapping model names to their result dicts
+            
+            Each result dict contains:
+            - 'annotator_weights': Reliability weights from Dawid-Skene
+            - 'label_probs': Estimated true label probabilities
+            - 'margins': List of (annotator_id, margin) tuples
+            - 'advantage_probabilities': Per-annotator test results
+            - 'winning_rate': Proportion of annotators where LLM significantly outperforms
+            - 'convergence_iteration': Iteration where Dawid-Skene converged
+            
+        Raises
+        ------
+        ValueError
+            If data is not annotated or required columns are missing
+        """
+        
+        if not self.annotated:
+            raise ValueError("Data must have human annotations to run the Dawid-Skene version of the alt_test.")
+        
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise comparison data found")
+        
+        # Find all available decision columns
+        decision_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+        
+        if len(decision_cols) == 0:
+            raise ValueError("No 'decision' columns found. Run generate_pairwise_annotations() first.")
+        
+        # Determine which columns to test
+        if test_all_llms:
+            # Test all available LLM decision columns
+            cols_to_test = decision_cols
+            print(f"Testing all {len(cols_to_test)} LLM decision columns: {cols_to_test}")
+        else:
+            # Test single column
+            if decision_col is None:
+                if len(decision_cols) == 1:
+                    cols_to_test = [decision_cols[0]]
+                else:
+                    available_models = [col.replace('decision_', '') for col in decision_cols if col != 'decision']
+                    if 'decision' in decision_cols:
+                        available_models.insert(0, 'decision (default)')
+                    raise ValueError(
+                        f"Multiple LLM decision columns found: {decision_cols}. "
+                        f"Please specify which one to use via decision_col parameter, "
+                        f"or set test_all_llms=True to test all. "
+                        f"Available models: {available_models}"
+                    )
+            else:
+                if decision_col not in self.pairwise_df.columns:
+                    raise ValueError(
+                        f"Column '{decision_col}' not found in pairwise_df. "
+                        f"Available columns: {list(self.pairwise_df.columns)}"
+                    )
+                cols_to_test = [decision_col]
+        
+        # Store results for each LLM
+        all_results = {}
+        
+        # Test each LLM decision column
+        for col in cols_to_test:
+            # Step 1: Prepare annotation matrix
+            instances = self.pairwise_df.index.tolist()
+            num_instances = len(instances)
+            num_annotators = len(self.annotator_cols)
+            
+            # Create annotation matrix: rows=instances, cols=annotators
+            annotator_labels = np.zeros((num_instances, num_annotators), dtype=int)
+            
+            for j, annotator_col in enumerate(self.annotator_cols):
+                for i in range(num_instances):
+                    val = self.pairwise_df.iloc[i][annotator_col]
+                    if pd.isna(val):
+                        annotator_labels[i, j] = 0  # Default
+                    elif val == 'Text1' or val == 0:
+                        annotator_labels[i, j] = 0
+                    elif val == 'Text2' or val == 1:
+                        annotator_labels[i, j] = 1
+                    else:
+                        annotator_labels[i, j] = 0  # Default for invalid
+            
+            # Create LLM labels array
+            llm_labels = np.zeros(num_instances, dtype=int)
+            for i in range(num_instances):
+                val = self.pairwise_df.iloc[i][col]
+                if val == 'Text1' or val == 0:
+                    llm_labels[i] = 0
+                elif val == 'Text2' or val == 1:
+                    llm_labels[i] = 1
+            
+            # Step 2: Dawid-Skene Model
+            def dawid_skene_em(labels, num_classes, max_iter, tol, random_seed):
+                n_instances, n_annotators = labels.shape
+                
+                np.random.seed(random_seed)
 
-        # remove instances with less than min_humans_per_instance
-        instances_to_keep = {i for i in h_set if len(h_set[i]) >= min_humans_per_instance and i in llm_annotations}
-        if len(instances_to_keep) < len(h_set):
-            print(f"Dropped {len(h_set) - len(instances_to_keep)} instances with less than {min_humans_per_instance} annotators.")
-        i_set = {h: [i for i in i_set[h] if i in instances_to_keep] for h in i_set}
-        h_set = {i: h_set[i] for i in h_set if i in instances_to_keep}
+                # Initialize with majority vote
+                label_probs = np.zeros((n_instances, num_classes))
+                for i in range(n_instances):
+                    majority = np.bincount(labels[i], minlength=num_classes)
+                    label_probs[i] = majority / majority.sum()
+                
+                # Initialize confusion matrices with noise
+                confusion_matrices = np.full((n_annotators, num_classes, num_classes), 
+                                            1 / num_classes)
+                confusion_matrices += np.random.randn(n_annotators, num_classes, num_classes) * 0.01
+                confusion_matrices = np.abs(confusion_matrices)
+                
+                # Normalize rows
+                for j in range(n_annotators):
+                    for c in range(num_classes):
+                        confusion_matrices[j, c] /= confusion_matrices[j, c].sum()
+                
+                prev_label_probs = label_probs.copy()
+                converged_iter = max_iter
+                
+                for iteration in range(max_iter):
+                    # E-step
+                    for i in range(n_instances):
+                        for c in range(num_classes):
+                            prob = 1.0
+                            for j in range(n_annotators):
+                                observed = labels[i, j]
+                                prob *= confusion_matrices[j, c, observed]
+                            label_probs[i, c] = prob
+                        
+                        # Normalize
+                        total = np.sum(label_probs[i])
+                        if total > 0:
+                            label_probs[i] /= total
+                        else:
+                            label_probs[i] = 1 / num_classes
+                    
+                    # M-step
+                    for j in range(n_annotators):
+                        for c in range(num_classes):
+                            for k in range(num_classes):
+                                numerator = sum(label_probs[i, c] 
+                                            for i in range(n_instances) 
+                                            if labels[i, j] == k)
+                                denominator = sum(label_probs[i, c] 
+                                                for i in range(n_instances))
+                                if denominator > 0:
+                                    confusion_matrices[j, c, k] = numerator / denominator
+                                else:
+                                    confusion_matrices[j, c, k] = 1 / num_classes
+                    
+                    # Check convergence
+                    if iteration > 0 and np.linalg.norm(label_probs - prev_label_probs) < tol:
+                        converged_iter = iteration
+                        break
+                    prev_label_probs = label_probs.copy()
+                
+                # Compute annotator weights
+                annotator_weights = np.array([
+                    np.mean(np.diag(confusion_matrices[j])) 
+                    for j in range(n_annotators)
+                ])
+                
+                return label_probs, annotator_weights, converged_iter
+            
+            label_probs, annotator_weights, conv_iter = dawid_skene_em(
+                annotator_labels, num_classes, max_iter, tol, random_seed
+            )
+            
+            # Step 3: Compute Weighted-ACC and Margins
+            margins = []
+            
+            for j in range(num_annotators):
+                other_indices = [k for k in range(num_annotators) if k != j]
+                weights = annotator_weights[other_indices]
+                
+                for i in range(num_instances):
+                    # Weighted agreement of LLM with other annotators
+                    llm_agreements = [
+                        int(llm_labels[i] == annotator_labels[i, k]) 
+                        for k in other_indices
+                    ]
+                    llm_weighted_acc = np.average(llm_agreements, weights=weights)
+                    
+                    # Weighted agreement of pulled-out annotator with others
+                    human_agreements = [
+                        int(annotator_labels[i, j] == annotator_labels[i, k]) 
+                        for k in other_indices
+                    ]
+                    human_weighted_acc = np.average(human_agreements, weights=weights)
+                    
+                    # Margin
+                    delta = llm_weighted_acc - human_weighted_acc
+                    margins.append((j, delta))
+            
+            # Step 4: Paired t-test per annotator
+            annotator_margins = pd.DataFrame(margins, columns=["annotator", "margin"])
+            advantage_probabilities = {}
+            winning_count = 0
+            
+            # Perform t-tests and collect p-values
+            p_values = []
+            for j in range(num_annotators):
+                deltas = annotator_margins[annotator_margins["annotator"] == j]["margin"].values
+                t_stat, p_value = ttest_1samp(deltas, popmean=0, alternative='greater')
+                p_values.append(p_value)
+                
+                annotator_name = self.annotator_cols[j]
+                advantage_probabilities[annotator_name] = {
+                    "mean_margin": np.mean(deltas),
+                    "p_value": p_value
+                }
+            
+            # Step 5: Apply correction if requested
+            if use_by_correction:
+                from statsmodels.stats.multitest import multipletests
+                reject, corrected_p_values, _, _ = multipletests(
+                    p_values, alpha=alpha, method='fdr_by'
+                )
+                
+                for j, annotator_name in enumerate(advantage_probabilities.keys()):
+                    advantage_probabilities[annotator_name]["corrected_p_value"] = corrected_p_values[j]
+                    advantage_probabilities[annotator_name]["reject_null"] = reject[j]
+                    if reject[j]:
+                        winning_count += 1
+            else:
+                for j, annotator_name in enumerate(advantage_probabilities.keys()):
+                    advantage_probabilities[annotator_name]["reject_null"] = p_values[j] < alpha
+                    if p_values[j] < alpha:
+                        winning_count += 1
+            
+            # Compute winning rate
+            winning_rate = winning_count / num_annotators
+            
+            # Store results
+            model_name = col.replace('decision_', '') if col != 'decision' else 'default'
+            all_results[model_name] = {
+                'annotator_weights': annotator_weights,
+                'label_probs': label_probs,
+                'margins': margins,
+                'advantage_probabilities': advantage_probabilities,
+                'winning_rate': winning_rate,
+                'convergence_iteration': conv_iter
+            }
+            
+            # Print results for this LLM
+            print("\n" + "="*70)
+            print(f"DAWID-SKENE VALIDATION RESULTS - {model_name.upper()}")
+            print("="*70)
+            print(f"Converged at iteration: {conv_iter}")
+            print(f"\nAnnotator Reliability Weights:")
+            for j, annotator_col in enumerate(self.annotator_cols):
+                print(f"  {annotator_col}: {annotator_weights[j]:.4f}")
+            
+            print(f"\nAdvantage Probabilities per Annotator:")
+            for annotator, stats in advantage_probabilities.items():
+                print(f"\n{annotator}:")
+                print(f"  Mean margin: {stats['mean_margin']:.4f}")
+                print(f"  p-value: {stats['p_value']:.4f}")
+                if use_by_correction:
+                    print(f"  Corrected p-value: {stats['corrected_p_value']:.4f}")
+                print(f"  Reject null: {stats['reject_null']}")
+            
+            print(f"\nOverall Winning Rate (ω): {winning_rate:.2f}")
+            print("="*70 + "\n")
+        
+        # Return single dict if testing one LLM, dict of dicts if testing multiple
+        if len(all_results) == 1:
+            return list(all_results.values())[0]
+        else:
+            return all_results
 
-        p_values, advantage_probs, humans = [], [], []
-        for excluded_h in humans_annotations:
-            llm_indicators = []
-            excluded_indicators = []
-            instances = [i for i in i_set[excluded_h] if i in llm_annotations]
-            if len(instances) < min_instances_per_human:
-                print(f"Skipping annotator {excluded_h} with only {len(instances)} instances < {min_instances_per_human}.")
-                continue
-
-            for i in instances:
-                human_ann = humans_annotations[excluded_h][i]
-                llm_ann = llm_annotations[i]
-                remaining_anns = [humans_annotations[h][i] for h in h_set[i] if h != excluded_h]
-                human_score = scoring_function(human_ann, remaining_anns)
-                llm_score = scoring_function(llm_ann, remaining_anns)
-                llm_indicators.append(1 if llm_score >= human_score else 0)
-                excluded_indicators.append(1 if human_score >= llm_score else 0)
-
-            diff_indicators = [exc_ind - llm_ind for exc_ind, llm_ind in zip(excluded_indicators, llm_indicators)]
-            p_values.append(self.ttest(diff_indicators, epsilon))
-            advantage_probs.append(float(np.mean(llm_indicators)))
-            humans.append(excluded_h)
-
-        rejected_indices = self.by_procedure(p_values, q_fdr)
-        advantage_prob = float(np.mean(advantage_probs))
-        winning_rate = len(rejected_indices) / len(humans)
-        return winning_rate, advantage_prob
-    
     def check_transitivity(self, annotator_cols=None):
         """
         Check transitivity violations for annotators.
@@ -1039,6 +1918,8 @@ class Pairadigm:
                 cols_to_check.append('decision')
             if self.annotated and self.annotator_cols:
                 cols_to_check.extend(self.annotator_cols)
+            if self.llm_annotated and self.llm_annotator_cols:
+                cols_to_check.extend(self.llm_annotator_cols)
             if not cols_to_check:
                 raise ValueError("No annotator columns found to check transitivity.")
         else:
@@ -1121,19 +2002,580 @@ class Pairadigm:
         
         return results
 
+    def dawid_skene_annotator_ranking(
+        self,
+        annotator_cols: Optional[List[str]] = None,
+        num_classes: int = 2,
+        max_iter: int = 100,
+        tol: float = 1e-6,
+        random_seed: Optional[int] = None,
+        return_confusion_matrices: bool = False) -> pd.DataFrame:
+        """
+        Apply Dawid-Skene model to rank all annotators (human and LLM) by reliability.
+        
+        This method estimates each annotator's reliability by computing their accuracy
+        (diagonal sum of confusion matrix) using the Dawid-Skene EM algorithm.
+        
+        Parameters
+        ----------
+        annotator_cols : List[str], optional
+            List of annotator column names to include. If None, uses all available
+            annotators (human annotator_cols + LLM decision columns)
+        num_classes : int, default=2
+            Number of classes (e.g., 2 for binary Text1/Text2)
+        max_iter : int, default=100
+            Maximum iterations for Dawid-Skene EM algorithm
+        tol : float, default=1e-6
+            Convergence tolerance for Dawid-Skene
+        return_confusion_matrices : bool, default=False
+            If True, includes confusion matrices in the returned DataFrame
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            - 'annotator': Annotator name
+            - 'reliability': Reliability score (mean diagonal of confusion matrix)
+            - 'rank': Rank (1 = most reliable)
+            - 'type': 'Human' or 'LLM'
+            - 'confusion_matrix': (optional) Full confusion matrix as nested array
+            
+        Examples
+        --------
+        >>> ranking = pairadigm_obj.dawid_skene_annotator_ranking()
+        >>> print(ranking[['annotator', 'reliability', 'rank', 'type']])
+        """
+        
+        if not self.llm_annotated and not self.annotated:
+            raise ValueError("Data must have annotations to rank annotators.")
+        
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise comparison data found")
+        
+        if random_seed is None:
+            raise ValueError("A seed is required for reproducibility of the EM algorithm. Recommended practice is to run results over multiple seeds to avoid seed hacking.")
+        
+        # Determine which annotators to include
+        if annotator_cols is None:
+            annotator_cols = []
+            
+            # Add human annotators
+            if self.annotator_cols:
+                annotator_cols.extend(self.annotator_cols)
+            
+            # Add LLM annotators (decision columns)
+            llm_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+            annotator_cols.extend(llm_cols)
+            
+            if not annotator_cols:
+                raise ValueError("No annotator columns found.")
+        
+        # Validate all columns exist
+        for col in annotator_cols:
+            if col not in self.pairwise_df.columns:
+                raise ValueError(f"Column '{col}' not found in pairwise_df")
+        
+        # Get unique instances
+        instances = self.pairwise_df.index.tolist()
+        num_instances = len(instances)
+        num_annotators = len(annotator_cols)
+        
+        print(f"Ranking {num_annotators} annotators across {num_instances} instances...")
+        
+        # Create annotation matrix: rows=instances, cols=annotators
+        annotator_labels = np.full((num_instances, num_annotators), -1, dtype=int)
+        
+        for j, col in enumerate(annotator_cols):
+            for i in range(num_instances):
+                val = self.pairwise_df.iloc[i][col]
+                if pd.isna(val):
+                    continue  # Keep as -1 for missing
+                elif val == 'Text1' or val == 0:
+                    annotator_labels[i, j] = 0
+                elif val == 'Text2' or val == 1:
+                    annotator_labels[i, j] = 1
+        
+        # Dawid-Skene EM Algorithm
+        def dawid_skene_em(labels, num_classes, max_iter, tol, random_seed):
+            n_instances, n_annotators = labels.shape
+            
+            np.random.seed(random_seed)
+
+            # Initialize with majority vote (ignoring missing -1 values)
+            label_probs = np.zeros((n_instances, num_classes))
+            for i in range(n_instances):
+                valid_labels = labels[i][labels[i] >= 0]
+                if len(valid_labels) > 0:
+                    majority = np.bincount(valid_labels, minlength=num_classes)
+                    label_probs[i] = majority / majority.sum()
+                else:
+                    label_probs[i] = 1 / num_classes
+            
+            # Initialize confusion matrices
+            confusion_matrices = np.full((n_annotators, num_classes, num_classes), 
+                                        1 / num_classes)
+            confusion_matrices += np.random.randn(n_annotators, num_classes, num_classes) * 0.01
+            confusion_matrices = np.abs(confusion_matrices)
+            
+            # Normalize rows
+            for j in range(n_annotators):
+                for c in range(num_classes):
+                    row_sum = confusion_matrices[j, c].sum()
+                    if row_sum > 0:
+                        confusion_matrices[j, c] /= row_sum
+            
+            prev_label_probs = label_probs.copy()
+            converged_iter = max_iter
+            
+            for iteration in range(max_iter):
+                # E-step
+                for i in range(n_instances):
+                    for c in range(num_classes):
+                        prob = 1.0
+                        for j in range(n_annotators):
+                            observed = labels[i, j]
+                            if observed >= 0:  # Skip missing annotations
+                                prob *= confusion_matrices[j, c, observed]
+                        label_probs[i, c] = prob
+                    
+                    # Normalize
+                    total = np.sum(label_probs[i])
+                    if total > 0:
+                        label_probs[i] /= total
+                    else:
+                        label_probs[i] = 1 / num_classes
+                
+                # M-step
+                for j in range(n_annotators):
+                    for c in range(num_classes):
+                        for k in range(num_classes):
+                            numerator = sum(label_probs[i, c] 
+                                        for i in range(n_instances) 
+                                        if labels[i, j] == k)
+                            denominator = sum(label_probs[i, c] 
+                                            for i in range(n_instances)
+                                            if labels[i, j] >= 0)  # Count only valid annotations
+                            if denominator > 0:
+                                confusion_matrices[j, c, k] = numerator / denominator
+                            else:
+                                confusion_matrices[j, c, k] = 1 / num_classes
+                
+                # Check convergence
+                if iteration > 0 and np.linalg.norm(label_probs - prev_label_probs) < tol:
+                    converged_iter = iteration
+                    print(f"Dawid-Skene converged at iteration {iteration}")
+                    break
+                prev_label_probs = label_probs.copy()
+            
+            # Compute annotator reliability (mean diagonal)
+            annotator_reliability = np.array([
+                np.mean(np.diag(confusion_matrices[j])) 
+                for j in range(n_annotators)
+            ])
+            
+            return annotator_reliability, confusion_matrices, converged_iter
+        
+        # Run Dawid-Skene
+        reliability_scores, confusion_matrices, conv_iter = dawid_skene_em(
+            annotator_labels, num_classes, max_iter, tol, random_seed
+        )
+        
+        # Create results DataFrame
+        results = []
+        for j, col in enumerate(annotator_cols):
+            annotator_type = 'LLM' if col.startswith('decision') else 'Human'
+            
+            result_dict = {
+                'annotator': col,
+                'reliability': reliability_scores[j],
+                'type': annotator_type
+            }
+            
+            if return_confusion_matrices:
+                result_dict['confusion_matrix'] = confusion_matrices[j].tolist()
+            
+            results.append(result_dict)
+        
+        results_df = pd.DataFrame(results)
+        
+        # Add rank (1 = most reliable)
+        results_df['rank'] = results_df['reliability'].rank(ascending=False, method='min').astype(int)
+        
+        # Sort by reliability
+        results_df = results_df.sort_values('reliability', ascending=False).reset_index(drop=True)
+        
+        # Print summary
+        print("\n" + "="*70)
+        print("DAWID-SKENE ANNOTATOR RANKING")
+        print("="*70)
+        print(f"Converged at iteration: {conv_iter}")
+        print(f"\nTop 5 Most Reliable Annotators:")
+        print(results_df[['rank', 'annotator', 'reliability', 'type']].head())
+        print("\n" + "="*70 + "\n")
+        
+        return results_df
+
+    def irr(
+        self,
+        method: str = 'auto',
+        alpha_level: str = 'nominal',
+        min_overlap: int = 2) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate inter-rater reliability (IRR) between annotators.
+        
+        Computes IRR separately for:
+        - Human annotators only
+        - LLM annotators only
+        - All annotators combined
+        
+        Uses Cohen's Kappa for 2 raters, Fleiss' Kappa or Krippendorff's Alpha for 3+ raters.
+        
+        Parameters
+        ----------
+        method : str, default='auto'
+            IRR method to use:
+            - 'auto': Uses Cohen's Kappa for 2 raters, Krippendorff's Alpha for 3+
+            - 'cohens_kappa': Cohen's Kappa (only for 2 raters)
+            - 'fleiss_kappa': Fleiss' Kappa (for 3+ raters, assumes complete overlap)
+            - 'krippendorff': Krippendorff's Alpha (handles missing data)
+        alpha_level : str, default='nominal'
+            Level of measurement for Krippendorff's Alpha:
+            - 'nominal': For categorical data
+            - 'ordinal': For ordered categories
+            - 'interval': For numeric scales
+            - 'ratio': For ratio scales
+        min_overlap : int, default=2
+            Minimum number of annotators required per item for inclusion
+            
+        Returns
+        -------
+        Dict[str, Dict[str, float]]
+            Dictionary with keys 'human', 'llm', 'all', each containing:
+            - 'method': Method used
+            - 'score': IRR score
+            - 'n_annotators': Number of annotators
+            - 'n_items': Number of items
+            - 'interpretation': Qualitative interpretation
+            
+        Raises
+        ------
+        ValueError
+            If insufficient annotators exist for IRR calculation
+            
+        Examples
+        --------
+        >>> results = pairadigm_obj.irr()
+        >>> print(f"Human IRR: {results['human']['score']:.3f}")
+        >>> print(f"LLM IRR: {results['llm']['score']:.3f}")
+        >>> print(f"All IRR: {results['all']['score']:.3f}")
+        """
+        from sklearn.metrics import cohen_kappa_score
+        import numpy as np
+        import pandas as pd
+        
+        if not self.annotated and not self.llm_annotated:
+            raise ValueError("No annotations found. Data must have human or LLM annotations.")
+        
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise comparison data found.")
+        
+        def interpret_kappa(score: float) -> str:
+            """Interpret kappa score using Landis & Koch (1977) scale."""
+            if score < 0:
+                return "Poor (worse than chance)"
+            elif score < 0.20:
+                return "Slight"
+            elif score < 0.40:
+                return "Fair"
+            elif score < 0.60:
+                return "Moderate"
+            elif score < 0.80:
+                return "Substantial"
+            else:
+                return "Almost Perfect"
+        
+        def cohens_kappa(annotations1, annotations2):
+            """Calculate Cohen's Kappa for two raters."""
+            # Filter to items both annotated
+            mask = (~pd.isna(annotations1)) & (~pd.isna(annotations2))
+            if mask.sum() < 2:
+                raise ValueError("Insufficient overlapping annotations (need at least 2)")
+            
+            return cohen_kappa_score(annotations1[mask], annotations2[mask])
+        
+        def fleiss_kappa(annotation_matrix):
+            """
+            Calculate Fleiss' Kappa for multiple raters.
+            annotation_matrix: rows=items, cols=raters
+            """
+            # Remove rows with missing data
+            complete_cases = ~np.isnan(annotation_matrix).any(axis=1)
+            if complete_cases.sum() < 2:
+                raise ValueError("Insufficient complete cases for Fleiss' Kappa")
+            
+            matrix = annotation_matrix[complete_cases]
+            n, k = matrix.shape  # n items, k raters
+            
+            # Get unique categories
+            categories = np.unique(matrix[~np.isnan(matrix)])
+            n_cat = len(categories)
+            
+            # Build frequency table
+            freq_table = np.zeros((n, n_cat))
+            for i, cat in enumerate(categories):
+                freq_table[:, i] = (matrix == cat).sum(axis=1)
+            
+            # Calculate p_j (proportion of all assignments in category j)
+            p_j = freq_table.sum(axis=0) / (n * k)
+            
+            # Calculate P_i (extent of agreement for item i)
+            P_i = (freq_table ** 2).sum(axis=1) - k
+            P_i = P_i / (k * (k - 1))
+            
+            # Calculate P_bar (mean of P_i)
+            P_bar = P_i.mean()
+            
+            # Calculate P_e_bar (expected agreement by chance)
+            P_e_bar = (p_j ** 2).sum()
+            
+            # Calculate Fleiss' Kappa
+            if P_e_bar == 1:
+                return 1.0
+            kappa = (P_bar - P_e_bar) / (1 - P_e_bar)
+            return kappa
+        
+        def krippendorff_alpha(annotation_matrix, level='nominal'):
+            """
+            Calculate Krippendorff's Alpha.
+            annotation_matrix: rows=items, cols=raters
+            Handles missing data.
+            """
+            matrix = annotation_matrix.copy()
+            n_items, n_raters = matrix.shape
+            
+            # Build coincidence matrix
+            categories = np.unique(matrix[~np.isnan(matrix)])
+            n_cat = len(categories)
+            cat_to_idx = {cat: i for i, cat in enumerate(categories)}
+            
+            coincidence = np.zeros((n_cat, n_cat))
+            
+            for i in range(n_items):
+                valid_ratings = matrix[i][~np.isnan(matrix[i])]
+                n_valid = len(valid_ratings)
+                
+                if n_valid < 2:
+                    continue
+                
+                for c1 in valid_ratings:
+                    for c2 in valid_ratings:
+                        if c1 != c2 or level == 'nominal':
+                            idx1, idx2 = cat_to_idx[c1], cat_to_idx[c2]
+                            coincidence[idx1, idx2] += 1 / (n_valid - 1)
+            
+            # Calculate observed disagreement
+            n_total = coincidence.sum()
+            if n_total == 0:
+                raise ValueError("No valid pairs for Krippendorff's Alpha")
+            
+            D_o = 0
+            for c1_idx in range(n_cat):
+                for c2_idx in range(n_cat):
+                    if c1_idx != c2_idx:
+                        if level == 'nominal':
+                            delta = 1
+                        elif level == 'ordinal':
+                            delta = (c1_idx - c2_idx) ** 2
+                        elif level in ['interval', 'ratio']:
+                            delta = (categories[c1_idx] - categories[c2_idx]) ** 2
+                        else:
+                            delta = 1
+                        D_o += coincidence[c1_idx, c2_idx] * delta
+            
+            D_o /= n_total
+            
+            # Calculate expected disagreement
+            n_c = coincidence.sum(axis=0) + coincidence.sum(axis=1)
+            D_e = 0
+            for c1_idx in range(n_cat):
+                for c2_idx in range(n_cat):
+                    if c1_idx != c2_idx:
+                        if level == 'nominal':
+                            delta = 1
+                        elif level == 'ordinal':
+                            delta = (c1_idx - c2_idx) ** 2
+                        elif level in ['interval', 'ratio']:
+                            delta = (categories[c1_idx] - categories[c2_idx]) ** 2
+                        else:
+                            delta = 1
+                        D_e += n_c[c1_idx] * n_c[c2_idx] * delta
+            
+            D_e /= (n_total * (n_total - 1))
+            
+            if D_e == 0:
+                return 1.0
+            alpha = 1 - (D_o / D_e)
+            return alpha
+        
+        def calculate_irr(annotator_cols, label):
+            """Calculate IRR for a set of annotators."""
+            if len(annotator_cols) == 0:
+                return None
+            
+            if len(annotator_cols) == 1:
+                raise ValueError(f"Cannot calculate IRR for {label} with only 1 annotator")
+            
+            # Build annotation matrix
+            annotation_matrix = np.full((len(self.pairwise_df), len(annotator_cols)), np.nan)
+            
+            for j, col in enumerate(annotator_cols):
+                for i in range(len(self.pairwise_df)):
+                    val = self.pairwise_df.iloc[i][col]
+                    if pd.isna(val):
+                        continue
+                    elif val == 'Text1' or val == 0:
+                        annotation_matrix[i, j] = 0
+                    elif val == 'Text2' or val == 1:
+                        annotation_matrix[i, j] = 1
+            
+            # Filter items with sufficient overlap
+            overlap_counts = (~np.isnan(annotation_matrix)).sum(axis=1)
+            valid_items = overlap_counts >= min_overlap
+            
+            if valid_items.sum() < 2:
+                raise ValueError(f"Insufficient items with {min_overlap}+ annotators for {label}")
+            
+            filtered_matrix = annotation_matrix[valid_items]
+            
+            # Choose method
+            n_annotators = len(annotator_cols)
+            
+            if method == 'auto':
+                if n_annotators == 2:
+                    chosen_method = 'cohens_kappa'
+                else:
+                    chosen_method = 'krippendorff'
+            else:
+                chosen_method = method
+            
+            # Calculate IRR
+            if chosen_method == 'cohens_kappa':
+                if n_annotators != 2:
+                    raise ValueError("Cohen's Kappa requires exactly 2 annotators")
+                score = cohens_kappa(filtered_matrix[:, 0], filtered_matrix[:, 1])
+            
+            elif chosen_method == 'fleiss_kappa':
+                if n_annotators < 3:
+                    raise ValueError("Fleiss' Kappa requires 3+ annotators")
+                score = fleiss_kappa(filtered_matrix)
+            
+            elif chosen_method == 'krippendorff':
+                score = krippendorff_alpha(filtered_matrix, level=alpha_level)
+            
+            else:
+                raise ValueError(f"Unknown method: {chosen_method}")
+            
+            return {
+                'method': chosen_method,
+                'score': score,
+                'n_annotators': n_annotators,
+                'n_items': valid_items.sum(),
+                'interpretation': interpret_kappa(score)
+            }
+        
+        # Calculate IRR for each group
+        results = {}
+        
+        # Human annotators
+        if self.annotated and self.annotator_cols:
+            try:
+                results['human'] = calculate_irr(self.annotator_cols, 'human annotators')
+            except ValueError as e:
+                results['human'] = {'error': str(e)}
+        
+        # LLM annotators
+        if self.llm_annotated and self.llm_annotator_cols:
+            try:
+                results['llm'] = calculate_irr(self.llm_annotator_cols, 'LLM annotators')
+            except ValueError as e:
+                results['llm'] = {'error': str(e)}
+        
+        # All annotators
+        all_cols = []
+        if self.annotator_cols:
+            all_cols.extend(self.annotator_cols)
+        if self.llm_annotator_cols:
+            all_cols.extend(self.llm_annotator_cols)
+        
+        if len(all_cols) >= 2:
+            try:
+                results['all'] = calculate_irr(all_cols, 'all annotators')
+            except ValueError as e:
+                results['all'] = {'error': str(e)}
+        
+        # Print results
+        print("\n" + "="*70)
+        print("INTER-RATER RELIABILITY RESULTS")
+        print("="*70)
+        
+        for group in ['human', 'llm', 'all']:
+            if group in results:
+                print(f"\n{group.upper()} ANNOTATORS:")
+                if 'error' in results[group]:
+                    print(f"  Error: {results[group]['error']}")
+                else:
+                    r = results[group]
+                    print(f"  Method: {r['method'].replace('_', ' ').title()}")
+                    print(f"  Score: {r['score']:.3f}")
+                    print(f"  Interpretation: {r['interpretation']}")
+                    print(f"  Annotators: {r['n_annotators']}")
+                    print(f"  Items: {r['n_items']}")
+        
+        print("="*70 + "\n")
+        
+        # Convert results to DataFrame
+        df_rows = []
+        for group in ['human', 'llm', 'all']:
+            if group in results:
+                row = {'group': group}
+                if 'error' in results[group]:
+                    row['error'] = results[group]['error']
+                    row['method'] = None
+                    row['score'] = None
+                    row['n_annotators'] = None
+                    row['n_items'] = None
+                    row['interpretation'] = None
+                else:
+                    row['error'] = None
+                    row['method'] = results[group]['method']
+                    row['score'] = results[group]['score']
+                    row['n_annotators'] = results[group]['n_annotators']
+                    row['n_items'] = results[group]['n_items']
+                    row['interpretation'] = results[group]['interpretation']
+                df_rows.append(row)
+        
+        results_df = pd.DataFrame(df_rows)
+
+        return results_df
+
 ################################
-# SCORING AND SUMMARIZATION
+# SCORING AND SUMMARIZATION OF ITEMS
 ################################
 
     def score_items(self, 
                     normalization_scale='zero-to-one',
                     update_classObject=True,
-                    summarize=True) -> pd.DataFrame:
+                    summarize=True,
+                    decision_col: str = 'decision') -> pd.DataFrame:
         """
         Compute Bradley-Terry scores from pairwise comparison results.
         
         Args:
+            normalization_scale (str): How to normalize scores. Options: 'zero-to-one', 'negative-one-to-one', 'none'
             update_classObject (bool, optional): If True, updates self.scored_df. Defaults to True.
+            summarize (bool, optional): If True, prints summary statistics. Defaults to True.
+            decision_col (str, optional): Name of the decision column to use. Defaults to 'decision'.
+                For multiple clients, use format 'decision_<model_name>'
 
         Returns:
             pd.DataFrame: Original DataFrame with added 'Bradley_Terry_Score' column
@@ -1141,11 +2583,21 @@ class Pairadigm:
         if self.pairwise_df is None:
             raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
 
+        if decision_col not in self.pairwise_df.columns:
+            available_decision_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+            raise ValueError(
+                f"Decision column '{decision_col}' not found in pairwise_df."
+                f"Available decision columns: {available_decision_cols}"
+            )
+
         # Filter out invalid decisions
-        valid_df = self.pairwise_df[self.pairwise_df['decision'].isin(['Text1', 'Text2'])]
+        valid_df = self.pairwise_df[self.pairwise_df[decision_col].isin(['Text1', 'Text2'])]
 
         if len(valid_df) == 0:
-            raise ValueError("No valid comparisons found to compute Bradley-Terry scores.")
+            raise ValueError("No valid comparisons found to compute Bradley-Terry scores. Please make sure the value in the decision_col are 'Text1' or 'Text2'.")
+        
+        if len(valid_df) < len(self.pairwise_df):
+            warnings.warn("Some rows filtered out due to not containing 'Text1' or 'Text2' in the decision_col. If scoring human annotations, please adjust those values accordingly.")
 
         # Prepare data for Bradley-Terry model, handling different self.data formats for item mapping
         if self.paired:
@@ -1166,7 +2618,7 @@ class Pairadigm:
         for _, row in valid_df.iterrows():
             item1_idx = item_to_idx[row['item1']]
             item2_idx = item_to_idx[row['item2']]
-            decision = row['decision']
+            decision = row[decision_col]
             
             if decision == 'Text1':
                 comparisons.append((item1_idx, item2_idx))
@@ -1190,48 +2642,55 @@ class Pairadigm:
         else:
             raise ValueError("normalization_scale must be 'zero-to-one', 'negative-one-to-one', or 'none'")
 
+        # Determine score column name
+        score_col_name = 'Bradley_Terry_Score' if decision_col == 'decision' else f'Bradley_Terry_Score_{decision_col.replace("decision_", "")}'
+
         # Create scored DataFrame differently based on paired/unpaired data
         if self.paired:
             # For paired data, create a new DataFrame with unique items and their scores
             scored_df = pd.DataFrame({
                 'item_id': list(item_to_idx.keys()),
-                'Bradley_Terry_Score': [bt_scores[item_to_idx[item]] for item in item_to_idx.keys()]
+                score_col_name: [bt_scores[item_to_idx[item]] for item in item_to_idx.keys()]
             })
         else:
-            # For unpaired data, add scores to original DataFrame
-            scored_df = self.data.copy()
-            scored_df['Bradley_Terry_Score'] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
+            # For unpaired data, add scores to original DataFrame or scored_df if it exists
+            if self.scored_df is not None:
+                scored_df = self.scored_df.copy()
+            else:
+                scored_df = self.data.copy()
 
-        print(f"Bradley-Terry model fitted with {len(comparisons)} comparisons")
-        print(f"Mean {self.target_concept} score: {scored_df['Bradley_Terry_Score'].mean():.3f}")
-        print(f"Std {self.target_concept} score: {scored_df['Bradley_Terry_Score'].std():.3f}")
+            scored_df[score_col_name] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
 
-
-        # Update instance if requested
-        if update_classObject:
-            self.scored_df = scored_df
+        model_label = decision_col.replace('decision_', '') if decision_col != 'decision' else 'default'
+        print(f"[{model_label}] Bradley-Terry model fitted with {len(comparisons)} comparisons")
+        print(f"[{model_label}] Mean {self.target_concept} score: {scored_df[score_col_name].mean():.3f}")
+        print(f"[{model_label}] Std {self.target_concept} score: {scored_df[score_col_name].std():.3f}")
 
         if summarize:
         # For paired data, we don't have text_col in scored_df, so skip summarize or handle differently
             if self.paired:
                 print("\nSummary statistics:")
                 summary = {
-                    'mean': scored_df['Bradley_Terry_Score'].mean(),
-                    'median': scored_df['Bradley_Terry_Score'].median(),
-                    'std': scored_df['Bradley_Terry_Score'].std(),
-                    'min': scored_df['Bradley_Terry_Score'].min(),
-                    'max': scored_df['Bradley_Terry_Score'].max(),
-                    'count': scored_df['Bradley_Terry_Score'].count()
+                    'mean': scored_df[score_col_name].mean(),
+                    'median': scored_df[score_col_name].median(),
+                    'std': scored_df[score_col_name].std(),
+                    'min': scored_df[score_col_name].min(),
+                    'max': scored_df[score_col_name].max(),
+                    'count': scored_df[score_col_name].count()
                 }
                 for k, v in summary.items():
                     print(f"{k}: {v:.3f}")
             else:
                 summary = self.summarize_scores(df=scored_df, 
                                                 text_col=self.text_name, 
-                                                score_col='Bradley_Terry_Score')
+                                                score_col=score_col_name)
                 for k, v in summary.items():
                     print(f"{k}: {v:.3f}")
-
+        
+        # Update instance if requested
+        if update_classObject:
+            self.scored_df = scored_df
+            
         return scored_df
 
     def summarize_scores(
@@ -1325,7 +2784,7 @@ class Pairadigm:
             raise ValueError("No scored DataFrame found. Run score_items() first.")
         
         if score_col not in self.scored_df.columns:
-            raise ValueError(f"Column '{score_col}' not found in scored DataFrame.")
+            raise ValueError(f"Column '{score_col}' not found in scored DataFrame. Available columns: {self.scored_df.columns}")
         
         # Auto-generate title if not provided
         if title is None:
@@ -1427,7 +2886,7 @@ class Pairadigm:
             raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
 
         if decision_col not in self.pairwise_df.columns:
-            raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first.")
+            raise ValueError("No 'decision' column found. Run generate_pairwise_annotations() first or appened_human_annotations().")
         
         # Turn decision_col to 'decision' for consistency below
         if decision_col != 'decision':
@@ -1527,7 +2986,11 @@ class Pairadigm:
             return fig
         else:
             fig.show()
-    
+
+##############################
+# PERSISTENCE METHODS
+##############################
+
     def save(self, filepath: str):
         """
         Save a Pairadigm object to a file using pickle.
@@ -1552,8 +3015,10 @@ class Pairadigm:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
         try:
-            # Temporarily remove unpicklable client object
+            # Temporarily remove unpicklable client objects
+            clients = self.clients
             client = self.client
+            self.clients = None
             self.client = None
             
             # Temporarily remove the api_key if it exists
@@ -1566,12 +3031,16 @@ class Pairadigm:
             with open(filepath, 'wb') as f:
                 pickle.dump(self, f)
             
-            # Restore client
+            # Restore clients
+            self.clients = clients
             self.client = client
+            if api_key is not None:
+                self.api_key = api_key
             
             print(f"Pairadigm object saved successfully to: {filepath}")
         except Exception as e:
-            # Restore client even if save fails
+            # Restore clients even if save fails
+            self.clients = clients
             self.client = client
             if api_key is not None:
                 self.api_key = api_key
@@ -1612,8 +3081,9 @@ class Pairadigm:
             if not isinstance(obj, Pairadigm):
                 raise TypeError("Loaded object is not a Pairadigm instance")
             
-            # Recreate the LLM client
-            obj.client = LLMClient(model_name=obj.model)
+            # Recreate the LLM clients
+            obj.clients = [LLMClient(model_name=model_name) for model_name in obj.model_names]
+            obj.client = obj.clients[0]  # For backward compatibility
             
             print(f"Pairadigm object loaded successfully from: {filepath}")
             return obj
@@ -1704,8 +3174,9 @@ def load_pairadigm(filepath: str) -> Pairadigm:
         if not isinstance(obj, Pairadigm):
             raise TypeError("Loaded object is not a Pairadigm instance")
         
-        # Recreate the LLM client
-        obj.client = LLMClient(model_name=obj.model)
+        # Recreate the LLM clients
+        obj.clients = [LLMClient(model_name=model_name) for model_name in obj.model_names]
+        obj.client = obj.clients[0]  # For backward compatibility
         
         print(f"Pairadigm object loaded successfully from: {filepath}")
         return obj
