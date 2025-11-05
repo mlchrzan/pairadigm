@@ -1134,6 +1134,7 @@ class Pairadigm:
             text2_breakdown (str): Breakdown for second text
             target_concept (str): Concept name for comparison (e.g., "aversion to Republicans")
             client (LLMClient): LLM client to use for comparison
+            allow_ties (bool, optional): If True, allows ties in comparison. Defaults to False.
         Returns:
             str: "Text1" or "Text2" (or 'Tie' if allowed)
             str: Full LLM response for transparency
@@ -1209,6 +1210,7 @@ class Pairadigm:
         self,
         max_workers=8,
         update_classObject=True,
+        allow_ties=False,
         client_indices: Optional[Union[int, List[int]]] = None) -> pd.DataFrame:
         """
         Run pairwise comparisons on all pairs in the pairwise_df DataFrame in parallel.
@@ -1216,6 +1218,7 @@ class Pairadigm:
         Args:
             max_workers (int): Number of threads to use
             update_classObject (bool, optional): If True, updates self.pairwise_df with results. Defaults to True.
+            allow_ties (bool, optional): If True, allows ties in comparisons. Defaults to False.
             client_indices (int or List[int], optional): Index/indices of client(s) to use. 
                 If None, uses all clients. If int, uses single client. If list, uses multiple clients.
         Returns:
@@ -1275,7 +1278,7 @@ class Pairadigm:
                         row[breakdown2_col], 
                         self.target_concept,
                         client, 
-                        True
+                        allow_ties
                     ): idx
                     for idx, row in result_df.iterrows()
                 }
