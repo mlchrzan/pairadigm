@@ -1,13 +1,6 @@
 # pairadigm.py
 # Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
-# Current version 1.1.0
-# UPCOMING FEATURES, listed in priority order:
-# - Annotating with multiple LLMs for comparison (COMPLETE)
-# - Enhanced validation metrics and visualizations (IN PROGRESS)
-# - Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
-# - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
-# - Update Dawid-Skene methods to generate multiple runs to examine stablity (for now, we recommend people examine variance independently over multiple seeds to check for stability)
-# - Support for multiple concepts simultaneously (NOT STARTED)
+# Current version 1.3.0
 
 import pandas as pd
 import itertools
@@ -1980,6 +1973,7 @@ class Pairadigm:
             items = list(set(df['item1'].unique()) | set(df['item2'].unique()))
             
             # Create a dictionary for fast lookup of comparisons
+            # Use encoding: 1 = item1 wins, 0 = item2 wins, 0.5 = tie
             comparisons = {}
             for _, row in df.iterrows():
                 # Skip rows with missing annotations for this annotator
@@ -1997,6 +1991,10 @@ class Pairadigm:
                 elif decision == 'Text2':
                     comparisons[key1] = 0
                     comparisons[key2] = 1
+                elif decision == 'Tie':
+                    # For ties, both directions are equal
+                    comparisons[key1] = 0.5
+                    comparisons[key2] = 0.5
                 elif isinstance(decision, (int, float)) and decision in [0, 1]:
                     # Handle binary numeric annotations
                     comparisons[key1] = int(decision)
@@ -2023,9 +2021,55 @@ class Pairadigm:
                             bc_decision = comparisons[bc_key]
                             ac_decision = comparisons[ac_key]
                             
-                            # Check transitivity violations
-                            if (ab_decision == 1 and bc_decision == 1 and ac_decision == 0) or \
-                            (ab_decision == 0 and bc_decision == 0 and ac_decision == 1):
+                            # Check transitivity violations accounting for ties
+                            # Using preference encoding: 1 = A > B, 0 = B > A, 0.5 = A = B
+                            # Transitivity violations:
+                            # 1. If A > B (1) and B > C (1), then A must > C (1), not = C (0.5) or < C (0)
+                            # 2. If A < B (0) and B < C (0), then A must < C (0), not = C (0.5) or > C (1)
+                            # 3. If A = B (0.5) and B = C (0.5), then A must = C (0.5), not > or < C
+                            # 4. If A = B (0.5) and B > C (1), then A must > C (1), not = C (0.5) or < C (0)
+                            # 5. If A = B (0.5) and B < C (0), then A must < C (0), not = C (0.5) or > C (1)
+                            # 6. If A > B (1) and B = C (0.5), then A must > C (1), not = C (0.5) or < C (0)
+                            # 7. If A < B (0) and B = C (0.5), then A must < C (0), not = C (0.5) or > C (1)
+                            
+                            is_violation = False
+                            
+                            # Case 1: A > B and B > C
+                            if ab_decision == 1 and bc_decision == 1:
+                                if ac_decision != 1:
+                                    is_violation = True
+                            
+                            # Case 2: A < B and B < C
+                            elif ab_decision == 0 and bc_decision == 0:
+                                if ac_decision != 0:
+                                    is_violation = True
+                            
+                            # Case 3: A = B and B = C
+                            elif ab_decision == 0.5 and bc_decision == 0.5:
+                                if ac_decision != 0.5:
+                                    is_violation = True
+                            
+                            # Case 4: A = B and B > C
+                            elif ab_decision == 0.5 and bc_decision == 1:
+                                if ac_decision != 1:
+                                    is_violation = True
+                            
+                            # Case 5: A = B and B < C
+                            elif ab_decision == 0.5 and bc_decision == 0:
+                                if ac_decision != 0:
+                                    is_violation = True
+                            
+                            # Case 6: A > B and B = C
+                            elif ab_decision == 1 and bc_decision == 0.5:
+                                if ac_decision != 1:
+                                    is_violation = True
+                            
+                            # Case 7: A < B and B = C
+                            elif ab_decision == 0 and bc_decision == 0.5:
+                                if ac_decision != 0:
+                                    is_violation = True
+                            
+                            if is_violation:
                                 violations += 1
             
             transitivity_score = 1 - (violations / total_triples) if total_triples > 0 else 0
@@ -2946,6 +2990,19 @@ class Pairadigm:
         # Turn decision_col to 'decision' for consistency below
         if decision_col != 'decision':
             self.pairwise_df['decision'] = self.pairwise_df[decision_col]
+
+        # Check for ties and warn if found
+        tie_values = ['Tie', 'tie', 2, 0.5]
+        ties_present = self.pairwise_df['decision'].isin(tie_values).any()
+        if ties_present:
+            num_ties = self.pairwise_df['decision'].isin(tie_values).sum()
+            total_comparisons = len(self.pairwise_df)
+            tie_percentage = (num_ties / total_comparisons) * 100
+            warnings.warn(
+                f"Network plot excludes {num_ties} tie decisions ({tie_percentage:.1f}% of comparisons). "
+                f"Ties represent no directional preference and cannot be represented as directed edges.",
+                UserWarning
+            )
 
         # Calculate centrality based on parameter
         centrality_funcs = {

@@ -1,5 +1,11 @@
-## v1.2.2
-- Fixed a bug in the `irr` method to check for Tie annotations and handle them correctly when calculating inter-rater reliability.
+## v1.3.0 - No-Tie-Die Release
+- **Tie Annotations**: Introduced a new "Tie" annotation option to indicate no preference between two items.
+- **New Visualization**: plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
+**Method Updates/Fixes for Ties**:
+- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
+- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
+- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
+
 
 ## v1.2.1
 - **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
