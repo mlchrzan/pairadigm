@@ -23,6 +23,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import seaborn as sns
 import time
 import anthropic
 import warnings
@@ -2258,6 +2260,7 @@ class Pairadigm:
         - All annotators combined
         
         Uses Cohen's Kappa for 2 raters, Fleiss' Kappa or Krippendorff's Alpha for 3+ raters.
+        Automatically handles tie values if present in the data.
         
         Parameters
         ----------
@@ -2332,10 +2335,11 @@ class Pairadigm:
             
             return cohen_kappa_score(annotations1[mask], annotations2[mask])
         
-        def fleiss_kappa(annotation_matrix):
+        def fleiss_kappa(annotation_matrix, num_categories=None):
             """
             Calculate Fleiss' Kappa for multiple raters.
             annotation_matrix: rows=items, cols=raters
+            num_categories: int, optional - number of categories (detected if None)
             """
             # Remove rows with missing data
             complete_cases = ~np.isnan(annotation_matrix).any(axis=1)
@@ -2346,8 +2350,12 @@ class Pairadigm:
             n, k = matrix.shape  # n items, k raters
             
             # Get unique categories
-            categories = np.unique(matrix[~np.isnan(matrix)])
-            n_cat = len(categories)
+            if num_categories is None:
+                categories = np.unique(matrix[~np.isnan(matrix)])
+                n_cat = len(categories)
+            else:
+                categories = np.arange(num_categories)
+                n_cat = num_categories
             
             # Build frequency table
             freq_table = np.zeros((n, n_cat))
@@ -2373,18 +2381,24 @@ class Pairadigm:
             kappa = (P_bar - P_e_bar) / (1 - P_e_bar)
             return kappa
         
-        def krippendorff_alpha(annotation_matrix, level='nominal'):
+        def krippendorff_alpha(annotation_matrix, level='nominal', num_categories=None):
             """
             Calculate Krippendorff's Alpha.
             annotation_matrix: rows=items, cols=raters
+            level: measurement level ('nominal', 'ordinal', 'interval', 'ratio')
+            num_categories: int, optional - number of categories (detected if None)
             Handles missing data.
             """
             matrix = annotation_matrix.copy()
             n_items, n_raters = matrix.shape
             
             # Build coincidence matrix
-            categories = np.unique(matrix[~np.isnan(matrix)])
-            n_cat = len(categories)
+            if num_categories is None:
+                categories = np.unique(matrix[~np.isnan(matrix)])
+                n_cat = len(categories)
+            else:
+                categories = np.arange(num_categories)
+                n_cat = num_categories
             cat_to_idx = {cat: i for i, cat in enumerate(categories)}
             
             coincidence = np.zeros((n_cat, n_cat))
@@ -2454,6 +2468,16 @@ class Pairadigm:
             if len(annotator_cols) == 1:
                 raise ValueError(f"Cannot calculate IRR for {label} with only 1 annotator")
             
+            # First pass: detect unique values to determine if ties are present
+            unique_values = set()
+            for col in annotator_cols:
+                col_values = self.pairwise_df[col].dropna().unique()
+                unique_values.update(col_values)
+            
+            # Check for tie values
+            has_ties = any(val in ['Tie', 'tie', 2] for val in unique_values)
+            num_categories = 3 if has_ties else 2
+            
             # Build annotation matrix
             annotation_matrix = np.full((len(self.pairwise_df), len(annotator_cols)), np.nan)
             
@@ -2466,6 +2490,8 @@ class Pairadigm:
                         annotation_matrix[i, j] = 0
                     elif val == 'Text2' or val == 1:
                         annotation_matrix[i, j] = 1
+                    elif val in ['Tie', 'tie', 2]:
+                        annotation_matrix[i, j] = 2
             
             # Filter items with sufficient overlap
             overlap_counts = (~np.isnan(annotation_matrix)).sum(axis=1)
@@ -2496,10 +2522,10 @@ class Pairadigm:
             elif chosen_method == 'fleiss_kappa':
                 if n_annotators < 3:
                     raise ValueError("Fleiss' Kappa requires 3+ annotators")
-                score = fleiss_kappa(filtered_matrix)
+                score = fleiss_kappa(filtered_matrix, num_categories=num_categories)
             
             elif chosen_method == 'krippendorff':
-                score = krippendorff_alpha(filtered_matrix, level=alpha_level)
+                score = krippendorff_alpha(filtered_matrix, level=alpha_level, num_categories=num_categories)
             
             else:
                 raise ValueError(f"Unknown method: {chosen_method}")
@@ -3015,6 +3041,184 @@ class Pairadigm:
             return fig
         else:
             fig.show()
+
+    def plot_epsilon_sensitivity(
+        self,
+        epsilon_range: Tuple[float, float] = (-0.1, 0.25),
+        epsilon_step: float = 0.01,
+        test_all_llms: bool = True,
+        figsize: Tuple[float, float] = (12, 7),
+        style: str = 'whitegrid',
+        palette: str = 'husl',
+        show_annotations: bool = True,
+        return_data: bool = False) -> Union[None, Tuple[plt.Figure, pd.DataFrame]]:
+        """
+        Plot winning rate as a function of epsilon values for ALT-TEST validation.
+        
+        This visualization helps determine appropriate epsilon thresholds for different
+        annotator quality levels (crowdworkers, trained annotators, experts).
+        
+        Parameters
+        ----------
+        epsilon_range : Tuple[float, float], default=(-0.1, 0.25)
+            Range of epsilon values to test (start, end)
+        epsilon_step : float, default=0.01
+            Step size between epsilon values
+        test_all_llms : bool, default=True
+            Whether to test all LLM models or just the default
+        figsize : Tuple[float, float], default=(12, 7)
+            Figure size (width, height) in inches
+        style : str, default='whitegrid'
+            Seaborn style to use ('whitegrid', 'darkgrid', 'white', 'dark', 'ticks')
+        palette : str, default='husl'
+            Color palette for different models
+        show_annotations : bool, default=True
+            Whether to show reference lines for annotator types
+        return_data : bool, default=False
+            If True, returns (figure, data_df) instead of just showing plot
+            
+        Returns
+        -------
+        None or Tuple[plt.Figure, pd.DataFrame]
+            If return_data=True, returns the figure and a DataFrame with all results
+            
+        Examples
+        --------
+        >>> # Basic usage
+        >>> pairadigm_obj.plot_epsilon_sensitivity()
+        
+        >>> # Get underlying data
+        >>> fig, data = pairadigm_obj.plot_epsilon_sensitivity(return_data=True)
+        >>> print(data.head())
+        
+        >>> # Custom epsilon range for crowdworker validation
+        >>> pairadigm_obj.plot_epsilon_sensitivity(epsilon_range=(0.0, 0.15))
+        """
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        
+        # Check for annotations
+        if not self.annotated:
+            raise ValueError("Data must have human annotations to perform the alt-test and epsilon sensitivity analysis")
+        if not self.annotator_cols or len(self.annotator_cols) == 0:
+            raise ValueError("No annotator columns found for human annotations")
+        if not self.llm_annotator_cols or len(self.llm_annotator_cols) == 0:
+            raise ValueError("No LLM annotator columns found for LLM annotations")
+        
+        # Generate epsilon values
+        epsilon_values = np.arange(epsilon_range[0], epsilon_range[1] + epsilon_step, epsilon_step)
+        
+        print(f"Testing {len(epsilon_values)} epsilon values from {epsilon_range[0]} to {epsilon_range[1]}...")
+        
+        # Store results
+        all_results = []
+        
+        # Calculate winning rate for each epsilon
+        for i, eps in enumerate(epsilon_values):
+            try:
+                result = self.alt_test(epsilon=eps, test_all_llms=test_all_llms)
+                all_results.append(result)
+                    
+            except Exception as e:
+                print(f"Warning: Failed at epsilon={eps:.3f}: {e}")
+                all_results.append(None)
+        
+        # Extract model names from first valid result
+        if test_all_llms:
+            model_names = list(all_results[0].keys()) if all_results[0] else []
+        else:
+            model_names = ['default']
+        
+        # Prepare data for plotting
+        plot_data = []
+        for eps, result in zip(epsilon_values, all_results):
+            if result is None:
+                continue
+            if test_all_llms:
+                for model in model_names:
+                    plot_data.append({
+                        'epsilon': eps,
+                        'winning_rate': result[model][0],
+                        'advantage_prob': result[model][1],
+                        'model': model
+                    })
+            else:
+                plot_data.append({
+                    'epsilon': eps,
+                    'winning_rate': result[0],
+                    'advantage_prob': result[1],
+                    'model': 'default'
+                })
+        
+        df_plot = pd.DataFrame(plot_data)
+        
+        # Set style
+        sns.set_style(style)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Plot lines for each model
+        colors = sns.color_palette(palette, n_colors=len(model_names))
+        
+        for idx, model in enumerate(model_names):
+            model_data = df_plot[df_plot['model'] == model]
+            ax.plot(model_data['epsilon'], model_data['winning_rate'], 
+                marker='o', markersize=4, linewidth=2.5, 
+                label=model, color=colors[idx], alpha=0.8)
+        
+        # Add reference lines if requested
+        if show_annotations:
+            # Horizontal line at 0.5
+            ax.axhline(y=0.5, color='gray', linestyle='--', linewidth=1.5, 
+                    alpha=0.7, label='Random baseline', zorder=1)
+            
+            # Vertical lines for annotator types
+            reference_lines = [
+                (0.10, 'Crowdworkers', '#e74c3c'),
+                (0.15, 'Trained', '#f39c12'),
+                (0.20, 'Experts', '#27ae60')
+            ]
+            
+            for eps_val, label, color in reference_lines:
+                if epsilon_range[0] <= eps_val <= epsilon_range[1]:
+                    ax.axvline(x=eps_val, color=color, linestyle=':', 
+                            linewidth=2, alpha=0.6, zorder=1)
+                    
+                    # Add text annotation
+                    y_pos = ax.get_ylim()[1] * 0.95
+                    ax.text(eps_val, y_pos, f' {label}\n ε={eps_val}', 
+                        rotation=0, verticalalignment='top',
+                        horizontalalignment='left', fontsize=9,
+                        color=color, weight='bold',
+                        bbox=dict(boxstyle='round,pad=0.3', 
+                                    facecolor='white', edgecolor=color, alpha=0.8))
+        
+        # Formatting
+        ax.set_xlabel('Epsilon (ε)', fontsize=12, weight='bold')
+        ax.set_ylabel('Winning Rate (ω)', fontsize=12, weight='bold')
+        ax.set_title(f'Epsilon Sensitivity Analysis: {self.target_concept.title()}\n' + 
+                    f'Winning Rate vs. Epsilon Threshold',
+                    fontsize=14, weight='bold', pad=20)
+        
+        # Legend
+        ax.legend(title='Model', title_fontsize=11, fontsize=10,
+                loc='best', frameon=True, shadow=True)
+        
+        # Grid
+        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        ax.set_axisbelow(True)
+        
+        # Set limits
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlim(epsilon_range[0] - 0.01, epsilon_range[1] + 0.01)
+        
+        plt.tight_layout()
+        
+        if return_data:
+            return fig, df_plot
+        else:
+            plt.show()
 
 ##############################
 # PERSISTENCE METHODS
