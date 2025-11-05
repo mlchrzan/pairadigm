@@ -185,7 +185,7 @@ class LLMClient:
         uses_completion_tokens = any(model in self.model_name.lower() for model in newer_models)
         
         # Some newer models don't support temperature parameter
-        models_no_temp_support = ['gpt-5-nano']
+        models_no_temp_support = ['gpt-5-nano', 'gpt-5', 'gpt-5-mini']
         supports_temp = not any(model in self.model_name.lower() for model in models_no_temp_support)
         
         params = {
@@ -1066,6 +1066,14 @@ class Pairadigm:
             pd.DataFrame: DataFrame with pairings and associated breakdowns.
         """
 
+        # Add check for paired data
+        if self.paired:
+            raise ValueError(
+                "Data is already in paired format. Cannot generate pairings from paired data. "
+                "Use generate_pairwise_annotations() directly, or if you need to re-pair items, "
+                "create a new Pairadigm object with paired=False."
+            )
+
         # Pair items
         uuid_pairings = self.pair_items(
             self.data[self.item_id_name].tolist(),
@@ -1117,27 +1125,40 @@ class Pairadigm:
         text1_breakdown: str, 
         text2_breakdown: str, 
         target_concept: str,
-        client: LLMClient):
+        client: LLMClient, 
+        allow_ties: bool = False):
         """
         Compare two CGCoT breakdowns to decide which expresses greater level of target concept.
         Args:
             text1_breakdown (str): Breakdown for first text
             text2_breakdown (str): Breakdown for second text
             target_concept (str): Concept name for comparison (e.g., "aversion to Republicans")
+            client (LLMClient): LLM client to use for comparison
         Returns:
-            str: "Text1" or "Text2"
+            str: "Text1" or "Text2" (or 'Tie' if allowed)
             str: Full LLM response for transparency
         """
 
-        comparison_prompt = f""" 
-        Description 1: {text1_breakdown}
-        Description 2: {text2_breakdown}
-        Based on these two Descriptions, which Description expresses greater {target_concept}: Description 1 or Description 2? You must choose one of the descriptions.
+        if not allow_ties:
+            comparison_prompt = f""" 
+            Description 1: {text1_breakdown}
+            Description 2: {text2_breakdown}
+            Based on these two Descriptions, which Description expresses greater {target_concept}: Description 1 or Description 2? You must choose one of the descriptions.
 
-        Format your response as follows:
-        FINAL ANSWER: <Your choice of "Description 1" or "Description 2">
-        JUSTIFICATION: <Your CONCISE reasoning for the choice>
-        """
+            Format your response as follows:
+            FINAL ANSWER: <Your choice of "Description 1" or "Description 2">
+            JUSTIFICATION: <Your CONCISE reasoning for the choice>
+            """
+        else:
+            comparison_prompt = f""" 
+            Description 1: {text1_breakdown}
+            Description 2: {text2_breakdown}
+            Based on these two Descriptions, which Description expresses greater {target_concept}: Description 1, Description 2, or are they tied? You must choose one of the descriptions or indicate a tie.
+
+            Format your response as follows:
+            FINAL ANSWER: <Your choice of "Description 1", "Description 2", or "Tie">
+            JUSTIFICATION: <Your CONCISE reasoning for the choice>
+            """
 
         response = client.generate(
             prompt=comparison_prompt,
@@ -1155,8 +1176,10 @@ class Pairadigm:
                 final_answer = "Text1"
             elif extracted_answer.lower() == "description 2":
                 final_answer = "Text2"
+            elif extracted_answer.lower() == "tie" and allow_ties:
+                final_answer = "Tie"
             else:
-                final_answer = f"ERROR from pairadigm (not model): Regex match found but final answer did not include Text1 or Text2. Model response: {response}"
+                final_answer = f"ERROR from pairadigm (not model): Regex match found but final answer did not include Text1 or Text2 (or, if allowed, Tie). Model response: {response}"
         else:
             # If regex fails, fallback to a direct extraction prompt
             extraction_prompt = f"""
@@ -1175,6 +1198,8 @@ class Pairadigm:
                 final_answer = "Text1"
             elif extracted_answer == "Description 2":
                 final_answer = "Text2"
+            elif extracted_answer == "Tie" and allow_ties:
+                final_answer = "Tie"
             else:
                 final_answer = f"ERROR from pairadigm (not model): Regex match NOT found even after recalling the model with an extraction prompt. Model response: {response}"
 
@@ -1249,7 +1274,8 @@ class Pairadigm:
                         row[breakdown1_col], 
                         row[breakdown2_col], 
                         self.target_concept,
-                        client
+                        client, 
+                        True
                     ): idx
                     for idx, row in result_df.iterrows()
                 }

@@ -8,7 +8,7 @@ Pairadigm uses a multi-stage CGCoT prompting approach to break down complex conc
 
 You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
 
-## Updates for version 1.1.0 🎉
+## Updates for version 1.2.1 🎉
 
 - **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
 - **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
@@ -18,7 +18,10 @@ You can see a full example of the package in use in the `example.ipynb` notebook
   - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
   - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
 - **Improved Multi-Model Workflows**: Test all LLMs at once with `test_all_llms=True` parameter
+- **Allowing for Ties**: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
 - **Better Error Handling**: Enhanced validation and clearer error messages
+
+**Bug-Fix from version 1.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
 
 ## Features
 
@@ -404,6 +407,8 @@ For questions and issues:
 ## Upcoming Features
 
 - Enhanced validation metrics and visualizations (IN PROGRESS, recommendations welcome!)
+    - Improved inter-rater reliability visualizations
+    - Item evaluation metrics and visualizations 
 - Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
 - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
 - Update Dawid-Skene methods to generate multiple runs to examine stability (for now, we recommend examining variance independently over multiple seeds)
