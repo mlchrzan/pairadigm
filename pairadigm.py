@@ -3228,7 +3228,7 @@ class Pairadigm:
         if show_annotations:
             # Horizontal line at 0.5
             ax.axhline(y=0.5, color='gray', linestyle='--', linewidth=1.5, 
-                    alpha=0.7, label='Random baseline', zorder=1)
+                    alpha=0.7, label='Approval Threshold', zorder=1)
             
             # Vertical lines for annotator types
             reference_lines = [
