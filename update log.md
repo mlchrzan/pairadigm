@@ -1,3 +1,6 @@
+## v1.3.1
+- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
+
 ## v1.3.0 - No-Tie-Die Release
 - **Tie Annotations**: Introduced a new "Tie" annotation option to indicate no preference between two items.
 - **New Visualization**: plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
