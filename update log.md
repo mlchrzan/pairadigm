@@ -4,6 +4,7 @@
 **Method Updates/Fixes for Ties**:
 - `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
 - `check_transitivity` accounts for Tie annotations in its logic of counting violations.
+- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
 - `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
 
 

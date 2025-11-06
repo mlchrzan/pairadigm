@@ -2660,8 +2660,8 @@ class Pairadigm:
 ################################
 # SCORING AND SUMMARIZATION OF ITEMS
 ################################
-
-    def score_items(self, 
+    
+    def _DEP_score_items(self, 
                     normalization_scale='zero-to-one',
                     update_classObject=True,
                     summarize=True,
@@ -2792,6 +2792,214 @@ class Pairadigm:
             
         return scored_df
 
+    def score_items(self, 
+                normalization_scale='zero-to-one',
+                update_classObject=True,
+                summarize=True,
+                decision_col: str = 'decision',
+                use_davidson: Optional[bool] = None) -> pd.DataFrame:
+        """
+        Compute Bradley-Terry or Davidson scores from pairwise comparison results.
+        Automatically detects ties and uses Davidson model if present, Bradley-Terry otherwise.
+        
+        Args:
+            normalization_scale (str): How to normalize scores. Options: 'zero-to-one', 'negative-one-to-one', 'none'
+            update_classObject (bool, optional): If True, updates self.scored_df. Defaults to True.
+            summarize (bool, optional): If True, prints summary statistics. Defaults to True.
+            decision_col (str, optional): Name of the decision column to use. Defaults to 'decision'.
+                For multiple clients, use format 'decision_<model_name>'
+            use_davidson (bool, optional): Force use of Davidson model. If None, auto-detects based on ties.
+
+        Returns:
+            pd.DataFrame: Original DataFrame with added score column
+        """
+        if self.pairwise_df is None:
+            raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
+
+        if decision_col not in self.pairwise_df.columns:
+            available_decision_cols = [col for col in self.pairwise_df.columns if col.startswith('decision')]
+            raise ValueError(
+                f"Decision column '{decision_col}' not found in pairwise_df."
+                f"Available decision columns: {available_decision_cols}"
+            )
+
+        # Check for ties in the data
+        tie_values = ['Tie', 'tie', 2, 0.5]
+        has_ties = self.pairwise_df[decision_col].isin(tie_values).any()
+        
+        # Determine which model to use
+        if use_davidson is None:
+            use_davidson = has_ties
+            if has_ties:
+                num_ties = self.pairwise_df[decision_col].isin(tie_values).sum()
+                print(f"Detected {num_ties} ties in data. Using Davidson model.")
+        
+        # Filter valid decisions based on model
+        if use_davidson:
+            valid_values = ['Text1', 'Text2', 'Tie', 'tie', 0, 1, 2, 0.5]
+        else:
+            valid_values = ['Text1', 'Text2', 0, 1]
+        
+        valid_df = self.pairwise_df[self.pairwise_df[decision_col].isin(valid_values)]
+
+        if len(valid_df) == 0:
+            raise ValueError("No valid comparisons found to compute scores.")
+        
+        if len(valid_df) < len(self.pairwise_df):
+            warnings.warn(f"Some rows filtered out due to invalid decision values. Using {len(valid_df)}/{len(self.pairwise_df)} comparisons.")
+
+        # Prepare item mapping
+        if self.paired:
+            item1_col, item2_col = self.item_id_cols
+            all_items = pd.concat([
+                self.pairwise_df[item1_col],
+                self.pairwise_df[item2_col]
+            ]).unique().tolist()
+            item_to_idx = {item: idx for idx, item in enumerate(all_items)}
+        else:
+            item_to_idx = {item: idx for idx, item in enumerate(self.data[self.item_id_name].tolist())}
+
+        idx_to_item = {idx: item for item, idx in item_to_idx.items()}
+        n_items = len(item_to_idx)
+
+        if use_davidson:
+            # Prepare data for Davidson model
+            # Create comparison matrix: wins[i,j] = number of times i beat j
+            # ties[i,j] = number of ties between i and j
+            wins = np.zeros((n_items, n_items))
+            ties = np.zeros((n_items, n_items))
+            
+            for _, row in valid_df.iterrows():
+                i = item_to_idx[row['item1']]
+                j = item_to_idx[row['item2']]
+                decision = row[decision_col]
+                
+                if decision in ['Text1', 0]:
+                    wins[i, j] += 1
+                elif decision in ['Text2', 1]:
+                    wins[j, i] += 1
+                elif decision in ['Tie', 'tie', 2]:
+                    ties[i, j] += 1
+                    ties[j, i] += 1  # Symmetric
+            
+            # Fit Davidson model using MM algorithm
+            # Initialize with uniform scores
+            scores = np.ones(n_items)
+            nu = 1.0  # Tie parameter
+            max_iter = 1000
+            tol = 1e-6
+            
+            for iteration in range(max_iter):
+                scores_old = scores.copy()
+                
+                # Update scores
+                for i in range(n_items):
+                    numerator = 0
+                    denominator = 0
+                    
+                    for j in range(n_items):
+                        if i != j:
+                            # Wins
+                            numerator += wins[i, j]
+                            denominator += (wins[i, j] + wins[j, i]) / (scores[i] + scores[j])
+                            
+                            # Ties
+                            numerator += 0.5 * ties[i, j]
+                            denominator += ties[i, j] * nu / (scores[i] + scores[j] + 2 * nu)
+                    
+                    if denominator > 0:
+                        scores[i] = numerator / denominator
+                
+                # Normalize to prevent overflow
+                scores = scores / scores.sum() * n_items
+                
+                # Check convergence
+                if np.linalg.norm(scores - scores_old) < tol:
+                    print(f"Davidson model converged in {iteration + 1} iterations")
+                    break
+            
+            bt_scores = scores
+            model_name = "Davidson"
+            
+        else:
+            # Use Bradley-Terry model (original implementation)
+            comparisons = []
+            for _, row in valid_df.iterrows():
+                item1_idx = item_to_idx[row['item1']]
+                item2_idx = item_to_idx[row['item2']]
+                decision = row[decision_col]
+                
+                if decision in ['Text1', 0]:
+                    comparisons.append((item1_idx, item2_idx))
+                elif decision in ['Text2', 1]:
+                    comparisons.append((item2_idx, item1_idx))
+
+            if not comparisons:
+                raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
+
+            # Fit Bradley-Terry model
+            bt_scores = choix.ilsr_pairwise(len(item_to_idx), comparisons, alpha=0.1)
+            model_name = "Bradley-Terry"
+
+        # Normalize scores
+        if normalization_scale == 'zero-to-one':
+            bt_scores = (bt_scores - bt_scores.min()) / (bt_scores.max() - bt_scores.min())
+        elif normalization_scale == 'negative-one-to-one':
+            bt_scores = 2 * (bt_scores - bt_scores.min()) / (bt_scores.max() - bt_scores.min()) - 1
+        elif normalization_scale == 'none':
+            pass
+        else:
+            raise ValueError("normalization_scale must be 'zero-to-one', 'negative-one-to-one', or 'none'")
+
+        # Determine score column name
+        score_col_name = f'{model_name.replace("-", "_")}_Score' if decision_col == 'decision' else f'{model_name.replace("-", "_")}_Score_{decision_col.replace("decision_", "")}'
+
+        # Create scored DataFrame
+        if self.paired:
+            scored_df = pd.DataFrame({
+                'item_id': list(item_to_idx.keys()),
+                score_col_name: [bt_scores[item_to_idx[item]] for item in item_to_idx.keys()]
+            })
+        else:
+            if self.scored_df is not None:
+                scored_df = self.scored_df.copy()
+            else:
+                scored_df = self.data.copy()
+            scored_df[score_col_name] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
+
+        model_label = decision_col.replace('decision_', '') if decision_col != 'decision' else 'default'
+        print(f"[{model_label}] {model_name} model fitted with {len(valid_df)} comparisons")
+        if use_davidson:
+            num_ties = valid_df[decision_col].isin(tie_values).sum()
+            print(f"[{model_label}] Including {num_ties} tie decisions")
+        print(f"[{model_label}] Mean {self.target_concept} score: {scored_df[score_col_name].mean():.3f}")
+        print(f"[{model_label}] Std {self.target_concept} score: {scored_df[score_col_name].std():.3f}")
+
+        if summarize:
+            if self.paired:
+                print("\nSummary statistics:")
+                summary = {
+                    'mean': scored_df[score_col_name].mean(),
+                    'median': scored_df[score_col_name].median(),
+                    'std': scored_df[score_col_name].std(),
+                    'min': scored_df[score_col_name].min(),
+                    'max': scored_df[score_col_name].max(),
+                    'count': scored_df[score_col_name].count()
+                }
+                for k, v in summary.items():
+                    print(f"{k}: {v:.3f}")
+            else:
+                summary = self.summarize_scores(df=scored_df, 
+                                                text_col=self.text_name, 
+                                                score_col=score_col_name)
+                for k, v in summary.items():
+                    print(f"{k}: {v:.3f}")
+        
+        if update_classObject:
+            self.scored_df = scored_df
+            
+        return scored_df
+
     def summarize_scores(
         self,
         df=None, 
@@ -2887,7 +3095,7 @@ class Pairadigm:
         
         # Auto-generate title if not provided
         if title is None:
-            title = f'Distribution of {self.target_concept.title()} Scores from Bradley-Terry Model'
+            title = f'Distribution of {self.target_concept.title()} Scores'
         
         # Create histogram
         fig = px.histogram(
