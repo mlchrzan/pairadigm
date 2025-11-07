@@ -1304,9 +1304,10 @@ class Pairadigm:
                         row[breakdown2_col], 
                         self.target_concept,
                         client, 
-                        allow_ties,
                         max_tokens,
-                        temperature
+                        temperature,
+                        allow_ties
+                        
                     ): idx
                     for idx, row in result_df.iterrows()
                 }
