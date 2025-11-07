@@ -746,7 +746,7 @@ class Pairadigm:
             client: LLMClient,
             rate_limit_per_minute=None,
             max_tokens: int = 1000,
-            tempature: float = 0.0) -> str:
+            temperature: float = 0.0) -> str:
         """
         Generate concept-specific breakdown for a given text using CGCoT prompts.
         Args:
@@ -754,7 +754,7 @@ class Pairadigm:
             client (LLMClient): The LLM client to use for generation.
             rate_limit_per_minute (int, optional): Rate limit for API calls.
             max_tokens (int): Maximum tokens for LLM response.
-            tempature (float): Sampling temperature for LLM.
+            temperature (float): Sampling temperature for LLM.
         Returns:
             str: Concatenated concept-specific breakdown
         """
@@ -775,8 +775,8 @@ class Pairadigm:
                 try:
                     response = client.generate(
                         prompt=full_prompt,
-                        system_message="You are a precise and detail-oriented assistant who is CONCISE.",
-                        temperature=tempature, 
+                        system_message="You are a precise and detail-oriented assistant.",
+                        temperature=temperature, 
                         max_tokens=max_tokens
                     )
                 except Exception as e:
@@ -796,7 +796,7 @@ class Pairadigm:
             rate_limit_per_minute=None,
             update_dataframe=True,
             max_tokens: int = 1000,
-            tempature: float = 0.0,
+            temperature: float = 0.0,
             client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
         
         """
@@ -812,7 +812,7 @@ class Pairadigm:
             If True, adds breakdowns to self.data
         max_tokens : int, default=1000
             Maximum tokens for LLM response
-        tempature : float, default=0.0
+        temperature : float, default=0.0
             Sampling temperature for LLM
         client_indices : int or List[int], optional
             Index/indices of client(s) to use. 
@@ -859,7 +859,7 @@ class Pairadigm:
                         client,
                         rate_limit_per_minute,
                         max_tokens,
-                        tempature): row[self.item_id_name]
+                        temperature): row[self.item_id_name]
                     for _, row in self.data.iterrows()
                 }
                 for future in as_completed(futures):
@@ -1233,7 +1233,7 @@ class Pairadigm:
         max_workers=8,
         update_classObject=True,
         max_tokens: int = 1000,
-        tempature: float = 0.0,
+        temperature: float = 0.0,
         allow_ties=False,
         client_indices: Optional[Union[int, List[int]]] = None) -> pd.DataFrame:
         """
@@ -1243,7 +1243,7 @@ class Pairadigm:
             max_workers (int): Number of threads to use
             update_classObject (bool, optional): If True, updates self.pairwise_df with results. Defaults to True.
             max_tokens (int, optional): Max tokens for LLM response. Defaults to 1000.
-            tempature (float, optional): Sampling temperature for LLM. Defaults to 0.
+            temperature (float, optional): Sampling temperature for LLM. Defaults to 0.
             allow_ties (bool, optional): If True, allows ties in comparisons. Defaults to False.
             client_indices (int or List[int], optional): Index/indices of client(s) to use. 
                 If None, uses all clients. If int, uses single client. If list, uses multiple clients.
@@ -1306,7 +1306,7 @@ class Pairadigm:
                         client, 
                         allow_ties,
                         max_tokens,
-                        tempature
+                        temperature
                     ): idx
                     for idx, row in result_df.iterrows()
                 }
