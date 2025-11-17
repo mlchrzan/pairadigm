@@ -1,5 +1,6 @@
 ## v1.3.1
 - Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
+- Added progress monitoring for breakdown generation (both pre-paired and not)
 
 ## v1.3.0 - No-Tie-Die Release
 - **Tie Annotations**: Introduced a new "Tie" annotation option to indicate no preference between two items.

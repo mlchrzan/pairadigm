@@ -405,10 +405,11 @@ For questions and issues:
 - Review the docstrings in `pairadigm.py`
 
 ## Upcoming Features
-
+- Performance improvement for multiple models by parallelizing API calls across models, not just within models
 - Enhanced validation metrics and visualizations (IN PROGRESS, recommendations welcome!)
     - Improved inter-rater reliability visualizations
     - Item evaluation metrics and visualizations 
+- Conversion from Likert-scale annotation to pairwise
 - Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
 - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
 - Update Dawid-Skene methods to generate multiple runs to examine stability (for now, we recommend examining variance independently over multiple seeds)
