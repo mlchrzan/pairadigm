@@ -43,6 +43,8 @@ class LLMClient:
         API key for the LLM service. If None, reads from environment
     model_name : str
         Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4')
+    base_url : str, optional
+        Base URL for the LLM service API (if applicable)
     provider : str, optional
         Force specific provider ('google', 'openai', 'anthropic'). 
         If None, infers from model_name
@@ -52,12 +54,14 @@ class LLMClient:
             self,
             api_key: Optional[str] = None,
             model_name: str = 'gemini-2.0-flash-exp',
+            base_url: Optional[str] = None,
             provider: Optional[str] = None):
 
         self.model_name = model_name
         self.provider = provider or self._infer_provider(model_name)
         self.api_key = api_key or self._get_api_key()
         self.client = self._initialize_client()
+        self.base_url = base_url 
     
     def _infer_provider(self, model_name: str) -> str:
         """Infer provider from model name."""
@@ -101,6 +105,8 @@ class LLMClient:
         
         elif self.provider == 'openai':
             from openai import OpenAI
+            if self.base_url:
+                return OpenAI(api_key=self.api_key, base_url=self.base_url)
             return OpenAI(api_key=self.api_key)
         
         elif self.provider == 'anthropic':
@@ -176,11 +182,11 @@ class LLMClient:
         """Generate using OpenAI."""
         
         # Newer models use max_completion_tokens instead of max_tokens
-        newer_models = ['gpt-4-turbo', 'gpt-5', 'gpt-4o', 'gpt-5-nano', 'gpt-5-mini']
+        newer_models = ['gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-4o', 'gpt-5-nano', 'gpt-5-mini']
         uses_completion_tokens = any(model in self.model_name.lower() for model in newer_models)
         
         # Some newer models don't support temperature parameter
-        models_no_temp_support = ['gpt-5-nano', 'gpt-5', 'gpt-5-mini']
+        models_no_temp_support = ['gpt-5-nano']
         supports_temp = not any(model in self.model_name.lower() for model in models_no_temp_support)
         
         params = {

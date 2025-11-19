@@ -8,7 +8,7 @@ Pairadigm uses a multi-stage CGCoT prompting approach to break down complex conc
 
 You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
 
-## Updates for version 1.2.1 🎉
+## Updates for version 0.2.1 🎉
 
 - **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
 - **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
@@ -21,7 +21,7 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 - **Allowing for Ties**: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
 - **Better Error Handling**: Enhanced validation and clearer error messages
 
-**Bug-Fix from version 1.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
+**Bug-Fix from version 0.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
 
 ## Features
 
@@ -47,7 +47,7 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 - API keys for your chosen LLM provider(s)
 
 ### Setup
-
+In the terminal, follow these steps:
 1. Clone the repository:
 ```bash
 git clone https://github.com/mlchrzan/pairadigm.git
@@ -76,7 +76,7 @@ echo "ANTHROPIC_API_KEY=your_anthropic_api_key_here" >> .env
 
 ## Quick Start
 
-Below are the basic workflows for using the package. You can find a full example of this in the jupyter notebook 
+Below are the basic workflows for using the package. You can find a full example of this in the jupyter notebook `example.ipynb`.
 
 ### Basic Workflow: Unpaired Items
 

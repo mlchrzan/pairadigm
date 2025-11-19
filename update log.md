@@ -1,8 +1,9 @@
-## v1.3.1
+## v0.3.1
 - Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
 - Added progress monitoring for breakdown generation (both pre-paired and not)
+- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
 
-## v1.3.0 - No-Tie-Die Release
+## v0.3.0 - No-Tie-Die Release
 - **Tie Annotations**: Introduced a new "Tie" annotation option to indicate no preference between two items.
 - **New Visualization**: plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
 **Method Updates/Fixes for Ties**:
@@ -12,7 +13,7 @@
 - `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
 
 
-## v1.2.1
+## v0.2.1
 - **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
 - **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
 - **Enhanced Validation**: 
@@ -26,5 +27,5 @@
 
 **Bug-Fix from version 1.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
 
-## v1.1.0
+## v0.1.0
 Added functionality for handling multiple LLM models in a single Pairadigm analysis.
