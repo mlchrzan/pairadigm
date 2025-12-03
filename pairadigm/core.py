@@ -1,6 +1,6 @@
 # pairadigm.py
 # Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
-# Current version 0.2.1
+# Current version 0.3.1
 
 import pandas as pd
 import itertools

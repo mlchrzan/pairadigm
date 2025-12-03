@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.1] - 2025-12-02
+
+### Added
+- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
+- Added progress monitoring for breakdown generation (both pre-paired and not)
+- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
+- Introduced a new "Tie" annotation option to indicate no preference between two items.
+- plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
+
+### Fixed
+- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
+- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
+- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
+- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
+
+## [0.2.1] - 2025-11-01
+
+### Added
+- Multi-LLM Support: Annotate with multiple LLM models simultaneously for comparison
+- `append_human_annotations()` method to add human judgments to existing analyses
+- Enhanced Validation:
+  - Dawid-Skene model implementation for annotator reliability estimation
+  - `dawid_skene_alt_test()` for weighted agreement testing
+  - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
+  - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
+- Improved Multi-Model Workflows: Test all LLMs at once with `test_all_llms=True` parameter
+- Allowing for Ties: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
+- Better Error Handling: Enhanced validation and clearer error messages
+
+### Fixed
+- Bug in `LLMClient` class where certain models did not properly handle the temperature parameter
+
+## [0.1.0] - 2025-10-15
+
+### Added
+- Initial release
+- Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
+- Support for Google Gemini, OpenAI GPT, and Anthropic Claude models
+- Automated pairwise comparison with parallel processing
+- Bradley-Terry scoring for continuous evaluation
+- AltTest for validation against human annotations
+- Interactive visualizations with Plotly
+- Save/load functionality for analysis persistence

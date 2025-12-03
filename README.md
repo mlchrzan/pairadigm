@@ -8,6 +8,21 @@ Pairadigm uses a multi-stage CGCoT prompting approach to break down complex conc
 
 You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
 
+## Updates for version [0.3.1] - 2025-12-02
+
+### Added
+- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
+- Added progress monitoring for breakdown generation (both pre-paired and not)
+- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
+- Introduced a new "Tie" annotation option to indicate no preference between two items.
+- plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
+
+### Fixed
+- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
+- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
+- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
+- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
+
 ## Updates for version 0.2.1 🎉
 
 - **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
