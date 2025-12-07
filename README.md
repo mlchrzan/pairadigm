@@ -21,52 +21,6 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 - `build_pairadigm()` function to run full pipeline in one command
 - Enhanced progress monitoring for CGCoT breakdown generation
 
-## Updates for version 0.3.1 - 2025-11-12
-
-### Added
-- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
-- Added progress monitoring for breakdown generation (both pre-paired and not)
-- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
-- Introduced a new "Tie" annotation option to indicate no preference between two items.
-- plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
-
-### Fixed
-- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
-- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
-- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
-- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
-
-## Updates for version 0.2.1 🎉
-
-- **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
-- **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
-- **Enhanced Validation**: 
-  - Dawid-Skene model implementation for annotator reliability estimation
-  - `dawid_skene_alt_test()` for weighted agreement testing
-  - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
-  - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
-- **Improved Multi-Model Workflows**: Test all LLMs at once with `test_all_llms=True` parameter
-- **Allowing for Ties**: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
-- **Better Error Handling**: Enhanced validation and clearer error messages
-
-**Bug-Fix from version 0.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
-
-## Features
-
-- **Multi-Provider LLM Support**: Works with Google Gemini, OpenAI GPT, and Anthropic Claude models
-- **Multiple LLM Annotations**: Use multiple models simultaneously for comparison and consensus
-- **Flexible Workflows**: Start with unpaired items, pre-paired data, or human-annotated comparisons
-- **CGCoT Breakdowns**: Generate concept-specific analyses using customizable prompt chains
-- **Automated Pairwise Comparison**: Parallel processing of comparisons with rate limiting
-- **Bradley-Terry Scoring**: Convert pairwise preferences into continuous scores
-- **Validation Tools**: 
-  - ALT test for comparing LLM vs. human annotations
-  - Dawid-Skene model for annotator reliability estimation
-  - Inter-rater reliability (Cohen's/Fleiss' Kappa, Krippendorff's Alpha)
-  - Transitivity checking for consistency validation
-- **Interactive Visualizations**: Distribution plots and network graphs using Plotly
-- **Save/Load Functionality**: Persist analysis state for reproducibility
-
 ## Installation
 
 ### Prerequisites
@@ -478,3 +432,50 @@ For questions and issues:
 - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
 - Update Dawid-Skene methods to generate multiple runs to examine stability (for now, we recommend examining variance independently over multiple seeds)
 - Support for multiple concepts simultaneously (NOT STARTED)
+
+# Previous Updates (see CHANGELOG.md for all)
+## Updates for version 0.3.1 - 2025-11-12
+
+### Added
+- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
+- Added progress monitoring for breakdown generation (both pre-paired and not)
+- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
+- Introduced a new "Tie" annotation option to indicate no preference between two items.
+- plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
+
+### Fixed
+- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
+- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
+- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
+- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
+
+## Updates for version 0.2.1 🎉
+
+- **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
+- **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
+- **Enhanced Validation**: 
+  - Dawid-Skene model implementation for annotator reliability estimation
+  - `dawid_skene_alt_test()` for weighted agreement testing
+  - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
+  - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
+- **Improved Multi-Model Workflows**: Test all LLMs at once with `test_all_llms=True` parameter
+- **Allowing for Ties**: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
+- **Better Error Handling**: Enhanced validation and clearer error messages
+
+**Bug-Fix from version 0.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
+
+## Features
+
+- **Multi-Provider LLM Support**: Works with Google Gemini, OpenAI GPT, and Anthropic Claude models
+- **Multiple LLM Annotations**: Use multiple models simultaneously for comparison and consensus
+- **Flexible Workflows**: Start with unpaired items, pre-paired data, or human-annotated comparisons
+- **CGCoT Breakdowns**: Generate concept-specific analyses using customizable prompt chains
+- **Automated Pairwise Comparison**: Parallel processing of comparisons with rate limiting
+- **Bradley-Terry Scoring**: Convert pairwise preferences into continuous scores
+- **Validation Tools**: 
+  - ALT test for comparing LLM vs. human annotations
+  - Dawid-Skene model for annotator reliability estimation
+  - Inter-rater reliability (Cohen's/Fleiss' Kappa, Krippendorff's Alpha)
+  - Transitivity checking for consistency validation
+- **Interactive Visualizations**: Distribution plots and network graphs using Plotly
+- **Save/Load Functionality**: Persist analysis state for reproducibility
