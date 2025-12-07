@@ -9,15 +9,18 @@ This implementation trains a reward model on pairwise comparison data,
 then uses it to score individual text items on a continuous scale.
 """
 
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
 from torch.optim import AdamW
-from typing import List, Tuple, Optional, Union
+from typing import List, Tuple, Optional, Union, Dict
 import numpy as np
 from tqdm import tqdm
 import json
+from sklearn.model_selection import train_test_split
+from pairadigm import Pairadigm
 
 
 class RewardModel:
@@ -37,7 +40,8 @@ class RewardModel:
         model_name: str = "answerdotai/ModernBERT-large",
         dropout: float = 0.1,
         max_length: int = 384,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        Pairadigm: Optional['Pairadigm'] = None
     ):
         """
         Initialize the reward model trainer.
@@ -50,7 +54,15 @@ class RewardModel:
         """
         self.model_name = model_name
         self.max_length = max_length
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        if device:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = 'cuda'
+        elif torch.backends.mps.is_available():
+            self.device = 'mps'
+        else:
+            self.device = 'cpu'
+        print(f"Model using device: {self.device}")
         
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -58,6 +70,9 @@ class RewardModel:
         # Initialize model
         self.model = self._build_model(dropout)
         self.model.to(self.device)
+
+        # If a Pairadigm instance is provided, link it
+        self.pairadigm = Pairadigm
         
         # Training state
         self.optimizer = None
@@ -92,23 +107,137 @@ class RewardModel:
     
     def prepare_data(
         self,
-        pairs: List[Tuple[str, str, Union[int, float]]],
+        pairs: Optional[List[Tuple[str, str, Union[int, float]]]] = None,
         batch_size: int = 16,
-        shuffle: bool = True
-    ) -> DataLoader:
+        shuffle: bool = True,
+        decision_col: str = "decision",
+        score_col: str = "Bradley_Terry_Score",
+        margins: bool = True,
+        test_size: float = 0.15,
+        eval_size: float = 0.15,
+        stratify: Optional[List] = None,
+        random_state: Optional[int] = 42
+    ) -> Dict[str, DataLoader]:
         """
-        Prepare training data from pairwise comparisons.
-        
+        Prepare training, evaluation, and test data from pairwise comparisons.
+
         Args:
-            pairs: List of (text_winner, text_loser, margin) tuples
+            pairs: Optional list of (text_winner, text_loser, margin) tuples. If None and a Pairadigm instance is linked, will use Pairadigm.
             batch_size: Batch size for training
-            shuffle: Whether to shuffle the data
-            
+            shuffle: Whether to shuffle the training data
+            decision_col: Column name for decision in pairwise_df
+            score_col: Column name for scores in scored_df
+            margins: Whether to compute margins from scores
+            test_size: Proportion of data for test set (default 0.15)
+            eval_size: Proportion of data for eval set (default 0.15)
+            stratify: Optional list of labels for stratified splitting
+            random_state: Random seed for reproducibility
+
         Returns:
-            DataLoader for training
+            Dictionary with 'train', 'eval', and 'test' DataLoaders
         """
-        dataset = self._PairwiseDataset(pairs, self.tokenizer, self.max_length)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+        if pairs is None and self.pairadigm:
+            pairs = self._prepare_pairadigm(
+                decision_col=decision_col, 
+                score_col=score_col, 
+                margins=margins
+            )
+        elif pairs is None:
+            raise ValueError("No pairs provided and no Pairadigm instance linked.")
+        
+        # Split data: first split into train+eval and test
+        train_eval_pairs, test_pairs = train_test_split(
+            pairs,
+            test_size=test_size,
+            stratify=stratify,
+            random_state=random_state
+        )
+        
+        # Then split train+eval into train and eval
+        # Adjust eval_size to be relative to train+eval size
+        adjusted_eval_size = eval_size / (1 - test_size)
+        train_pairs, eval_pairs = train_test_split(
+            train_eval_pairs,
+            test_size=adjusted_eval_size,
+            stratify=None,  # stratify only on first split
+            random_state=random_state
+        )
+        
+        print(f"Data split - Train: {len(train_pairs)}, Eval: {len(eval_pairs)}, Test: {len(test_pairs)}")
+        
+        # Create datasets and dataloaders
+        train_dataset = self._PairwiseDataset(train_pairs, self.tokenizer, self.max_length)
+        eval_dataset = self._PairwiseDataset(eval_pairs, self.tokenizer, self.max_length)
+        test_dataset = self._PairwiseDataset(test_pairs, self.tokenizer, self.max_length)
+        
+        return {
+            'train': DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle),
+            'eval': DataLoader(eval_dataset, batch_size=batch_size, shuffle=False),
+            'test': DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        }
+    
+    def _prepare_pairadigm(
+            self,
+            decision_col: str = "decision", 
+            score_col: str = "Bradley_Terry_Score",
+            margins: bool = True):
+        """
+        Prepare pairwise data from linked Pairadigm instance.
+        Args:
+            decision_col: Column in pairwise_df indicating winner/loser
+            score_col: Column in scored_df with precomputed scores
+            margins: Whether to compute margins from scores
+        Returns:
+            Tuples with pairs and margins
+        """
+        if self.pairadigm is None:
+            raise ValueError("No Pairadigm instance linked to RewardModel.")
+        if not self.pairadigm.pairwise_df.columns.contains(decision_col):
+            raise ValueError(f"Decision column '{decision_col}' not found in pairwise_df. Run generate_pairwise_annotations() first.")
+
+        # Calculate margins when desired, if scores are available
+        if margins: 
+            if not self.pairadigm.scored_df:
+                raise ValueError("No scored_df found in linked Pairadigm instance.")
+            if not self.pairadigm.scored_df.columns.contains(score_col):
+                raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
+            
+            pairs = pd.merge(
+                self.pairadigm.pairwise_df[['item1', 'item2', 
+                                            'breakdown1', 'breakdown2', decision_col]],
+                self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
+                    left_on='item1',
+                    right_on=self.pairadigm.item_id_name,
+                    how='left'
+                ).rename(columns={score_col: 'item_A_score'}).drop(columns=[self.pairadigm.item_id_name]).merge(
+                    self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
+                    left_on='item2',
+                    right_on=self.pairadigm.item_id_name,
+                    how='left'
+                ).rename(columns={score_col: 'item_B_score'}).drop(columns=[self.pairadigm.item_id_name])
+            
+            pairs['margin'] = pairs['item_B_score'] - pairs['item_A_score']
+
+            # Make a tuple of breakdown1, breakdown2, margin for each row in prepped_data
+            training_pairs = list(zip(
+                pairs['breakdown1'],
+                pairs['breakdown2'],
+                pairs['margin']
+            ))
+
+            return training_pairs
+        
+        # If margins not desired, just return winner/loser pairs
+        training_pairs = []
+        for _, row in self.pairadigm.pairwise_df.iterrows():
+            if row[decision_col] == 1 or row[decision_col] == 'Text1':
+                training_pairs.append((row['breakdown1'], row['breakdown2'], 1.0))
+            elif row[decision_col] == 2 or row[decision_col] == 'Text2':
+                training_pairs.append((row['breakdown2'], row['breakdown1'], 1.0))
+            else:
+                continue  # Skip ties or invalid decisions
+
+        return training_pairs
     
     class _PairwiseDataset(Dataset):
         """Internal dataset class for pairwise comparisons."""
@@ -151,10 +280,10 @@ class RewardModel:
     def train(
         self,
         train_loader: DataLoader,
-        epochs: int = 3,
+        eval_loader: DataLoader,
+        epochs: int = 5,
         learning_rate: float = 2e-5,
         warmup_steps: int = 100,
-        eval_loader: Optional[DataLoader] = None,
         log_interval: int = 50
     ):
         """
@@ -162,10 +291,10 @@ class RewardModel:
         
         Args:
             train_loader: DataLoader with training pairs
+            eval_loader: DataLoader for evaluation
             epochs: Number of training epochs
             learning_rate: Learning rate for optimizer
             warmup_steps: Number of warmup steps for scheduler
-            eval_loader: Optional DataLoader for evaluation
             log_interval: Log metrics every N steps
         """
         self.model.train()
@@ -192,15 +321,17 @@ class RewardModel:
                     progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
             
             avg_epoch_loss = epoch_loss / len(train_loader)
-            self.training_history.append({'epoch': epoch + 1, 'loss': avg_epoch_loss})
+            epoch_metrics = {'epoch': epoch + 1, 'train_loss': avg_epoch_loss}
             
-            print(f"Epoch {epoch + 1} - Avg Loss: {avg_epoch_loss:.4f}")
+            print(f"Epoch {epoch + 1} - Train Loss: {avg_epoch_loss:.4f}")
             
             # Evaluation
             if eval_loader:
-                eval_loss = self.evaluate(eval_loader)
-                print(f"Epoch {epoch + 1} - Eval Loss: {eval_loss:.4f}")
-                self.training_history[-1]['eval_loss'] = eval_loss
+                eval_metrics = self.evaluate(eval_loader)
+                epoch_metrics.update(eval_metrics)
+                print(f"Epoch {epoch + 1} - Eval Loss: {eval_metrics['eval_loss']:.4f}, Eval Accuracy: {eval_metrics['eval_accuracy']:.4f}")
+            
+            self.training_history.append(epoch_metrics)
     
     def _training_step(self, batch) -> float:
         """Single training step."""
@@ -229,10 +360,19 @@ class RewardModel:
         
         return loss.item()
     
-    def evaluate(self, eval_loader: DataLoader) -> float:
-        """Evaluate the model on a validation set."""
+    def evaluate(self, eval_loader: DataLoader) -> Dict[str, float]:
+        """Evaluate the model on a validation set.
+        
+        Args:
+            eval_loader: DataLoader with evaluation pairs
+            
+        Returns:
+            Dictionary with 'eval_loss' and 'eval_accuracy' metrics
+        """
         self.model.eval()
         total_loss = 0
+        correct_predictions = 0
+        total_predictions = 0
         
         with torch.no_grad():
             for batch in eval_loader:
@@ -250,9 +390,16 @@ class RewardModel:
                 
                 loss = -torch.log(torch.sigmoid(reward_winner - reward_loser)).mean()
                 total_loss += loss.item()
+                
+                # Calculate accuracy (winner should have higher reward)
+                correct_predictions += (reward_winner > reward_loser).sum().item()
+                total_predictions += len(reward_winner)
         
         self.model.train()
-        return total_loss / len(eval_loader)
+        return {
+            'eval_loss': total_loss / len(eval_loader),
+            'eval_accuracy': correct_predictions / total_predictions
+        }
     
     def score_text(self, text: str) -> float:
         """
@@ -319,8 +466,8 @@ class RewardModel:
     def normalize_scores(
         self,
         scores: np.ndarray,
-        scale_min: float = 1.0,
-        scale_max: float = 9.0
+        scale_min: float = 0.0,
+        scale_max: float = 1.0
     ) -> np.ndarray:
         """
         Normalize raw reward scores to a desired scale.
@@ -343,6 +490,78 @@ class RewardModel:
         normalized = normalized * (scale_max - scale_min) + scale_min
         
         return normalized
+    
+    def test_model(self, test_loader: DataLoader) -> Dict[str, float]:
+        """
+        Evaluate the model on the test set and print detailed results.
+        
+        Args:
+            test_loader: DataLoader with test pairs
+            
+        Returns:
+            Dictionary with test metrics
+        """
+        print("\n" + "="*50)
+        print("Running Test Evaluation")
+        print("="*50)
+        
+        self.model.eval()
+        total_loss = 0
+        correct_predictions = 0
+        total_predictions = 0
+        all_margins = []
+        all_predicted_margins = []
+        
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Testing"):
+                for key in batch:
+                    batch[key] = batch[key].to(self.device)
+                
+                reward_winner = self.model(
+                    batch['input_ids_winner'],
+                    batch['attention_mask_winner']
+                )
+                reward_loser = self.model(
+                    batch['input_ids_loser'],
+                    batch['attention_mask_loser']
+                )
+                
+                loss = -torch.log(torch.sigmoid(reward_winner - reward_loser)).mean()
+                total_loss += loss.item()
+                
+                # Calculate accuracy
+                correct_predictions += (reward_winner > reward_loser).sum().item()
+                total_predictions += len(reward_winner)
+                
+                # Track margins for correlation analysis
+                predicted_margins = (reward_winner - reward_loser).cpu().numpy()
+                actual_margins = batch['margin'].cpu().numpy()
+                all_predicted_margins.extend(predicted_margins)
+                all_margins.extend(actual_margins)
+        
+        # Calculate metrics
+        test_loss = total_loss / len(test_loader)
+        test_accuracy = correct_predictions / total_predictions
+        
+        # Calculate correlation between predicted and actual margins
+        correlation = np.corrcoef(all_margins, all_predicted_margins)[0, 1]
+        
+        # Print results
+        print(f"\nTest Results:")
+        print(f"  Test Loss: {test_loss:.4f}")
+        print(f"  Test Accuracy: {test_accuracy:.4f} ({correct_predictions}/{total_predictions})")
+        print(f"  Margin Correlation: {correlation:.4f}")
+        print("\n" + "="*50 + "\n")
+        
+        results = {
+            'test_loss': test_loss,
+            'test_accuracy': test_accuracy,
+            'margin_correlation': correlation,
+            'correct_predictions': correct_predictions,
+            'total_predictions': total_predictions
+        }
+        
+        return results
     
     def save(self, path: str):
         """Save model and training state."""
