@@ -30,20 +30,12 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 
 ### Setup
 In the terminal, follow these steps:
-1. Clone the repository:
+1. Install the package:
 ```bash
-git clone https://github.com/mlchrzan/pairadigm.git
-cd pairadigm
+pip install git+https://github.com/mlchrzan/pairadigm.git
 ```
 
-2. Install dependencies:
-```bash
-pip install pandas numpy scipy plotly networkx choix python-dotenv google-genai statsmodels scikit-learn
-# Add openai and/or anthropic if using those providers:
-# pip install openai anthropic
-```
-
-3. Set up environment variables:
+2. Set up environment variables:
 ```bash
 # Create a .env file in the project root
 touch .env
