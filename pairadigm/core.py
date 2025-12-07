@@ -8,7 +8,6 @@ import random
 import choix
 from google import genai
 from google.genai import types
-import openai 
 import os
 from dotenv import load_dotenv
 from typing import List, Optional, Dict, Union
@@ -19,8 +18,6 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
-import anthropic
-import ollama
 import warnings
 import pickle
 from pathlib import Path
@@ -280,7 +277,7 @@ class LLMClient:
             "think": thinking_mode
         }
         
-        response = ollama.chat(
+        response = self.client.chat(
             model=self.model_name,
             messages=[
                 {"role": "system", "content": system_message},
