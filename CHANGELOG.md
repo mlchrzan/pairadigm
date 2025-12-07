@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.1] - 2025-12-02
+## [0.4.1] - 2025-12-07
+
+### Added
+- Added support for Ollama LLMs in LLMClient (local models), including the `think` parameter.
+  - Updated load_pairadigm() to handle loading Pairadigm objects with Ollama models without requiring API keys
+- Progress monitoring when generating CGCoT breakdowns. 
+- Create the `build_pairadigm()` function to run the full basic pipeline (breakdowns, pairings, annotation, and validation if human annotations are provided) all in one.
+- Added a new `RewardModel` class for finetuning a model based on paired data in `model.py`
+
+## [0.3.1] - 2025-11-12
 
 ### Added
 - Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.

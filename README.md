@@ -8,7 +8,20 @@ Pairadigm uses a multi-stage CGCoT prompting approach to break down complex conc
 
 You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
 
-## Updates for version [0.3.1] - 2025-12-02
+## Updates for version 0.4.1 - 2025-12-07
+
+### Added
+- **RewardModel Class**: Fine-tune ModernBERT for scalar construct measurement using reward modeling
+  - Train models on pairwise comparison data
+  - Score individual texts or batches on continuous scales
+  - Support for custom dropout, max length, and device settings
+  - Built-in score normalization to desired scales
+  - Save/load trained models for reuse
+- Support for Ollama LLMs (local models) with `think` parameter
+- `build_pairadigm()` function to run full pipeline in one command
+- Enhanced progress monitoring for CGCoT breakdown generation
+
+## Updates for version 0.3.1 - 2025-11-12
 
 ### Added
 - Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
@@ -318,6 +331,42 @@ p.save('my_analysis.pkl')
 # Load it later
 from pairadigm import load_pairadigm
 p = load_pairadigm('my_analysis.pkl')
+```
+
+### Fine-Tuning with RewardModel
+
+```python
+from pairadigm import RewardModel
+
+# Prepare training data from pairwise comparisons
+training_pairs = [
+    ("Text with high score", "Text with low score", 1.0),
+    ("Better text", "Worse text", 1.0),
+    # ... more pairs
+]
+
+# Initialize and train reward model
+reward_model = RewardModel(
+    model_name="answerdotai/ModernBERT-large",
+    dropout=0.1,
+    max_length=384
+)
+
+train_loader = reward_model.prepare_data(training_pairs, batch_size=16)
+reward_model.train(train_loader, epochs=3, learning_rate=2e-5)
+
+# Score new texts
+score = reward_model.score_text("New text to evaluate")
+scores = reward_model.score_batch(["Text 1", "Text 2", "Text 3"])
+
+# Normalize scores to desired scale (e.g., 1-9)
+normalized = reward_model.normalize_scores(scores, scale_min=1.0, scale_max=9.0)
+
+# Save trained model
+reward_model.save('my_reward_model.pt')
+
+# Load later
+reward_model.load('my_reward_model.pt')
 ```
 
 ### Custom Scoring Functions

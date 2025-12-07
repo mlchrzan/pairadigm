@@ -1,6 +1,6 @@
 # pairadigm.py
 # Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
-# Current version 0.3.1
+# Current version 0.4.1
 
 import pandas as pd
 import itertools
@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 import anthropic
+import ollama
 import warnings
 import pickle
 from pathlib import Path
@@ -32,7 +33,6 @@ from typing import List, Dict, Any, Callable, Union, Tuple
 ##############################
 # LLMClient class
 ##############################
-
 class LLMClient:
     """
     Unified LLM client supporting multiple backends.
@@ -42,11 +42,11 @@ class LLMClient:
     api_key : str, optional
         API key for the LLM service. If None, reads from environment
     model_name : str
-        Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4')
+        Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4', 'llama3.2')
     base_url : str, optional
-        Base URL for the LLM service API (if applicable)
+        Base URL for the LLM service API (default: 'http://localhost:11434' for Ollama)
     provider : str, optional
-        Force specific provider ('google', 'openai', 'anthropic'). 
+        Force specific provider ('google', 'openai', 'anthropic', 'ollama'). 
         If None, infers from model_name
     """
     
@@ -59,26 +59,47 @@ class LLMClient:
 
         self.model_name = model_name
         self.provider = provider or self._infer_provider(model_name)
+        self.base_url = base_url or self._get_default_base_url()
         self.api_key = api_key or self._get_api_key()
         self.client = self._initialize_client()
-        self.base_url = base_url 
     
     def _infer_provider(self, model_name: str) -> str:
         """Infer provider from model name."""
-        if 'gemini' in model_name.lower():
+        model_lower = model_name.lower()
+        
+        # Check for Ollama-specific patterns first (colon indicates local model tag)
+        if ':' in model_name:
+            return 'ollama'
+        
+        # Check for known Ollama model names
+        ollama_models = ['llama', 'mistral', 'phi', 'qwen', 'gemma', 'deepseek', 'vicuna', 'orca']
+        if any(x in model_lower for x in ollama_models):
+            return 'ollama'
+        
+        # Then check for cloud providers
+        if 'gemini' in model_lower:
             return 'google'
-        elif 'gpt' in model_name.lower():
+        elif model_lower.startswith('gpt-') and 'gpt-oss' not in model_lower:
+            # Be more specific - only official OpenAI models start with 'gpt-'
             return 'openai'
-        elif 'claude' in model_name.lower():
+        elif 'claude' in model_lower:
             return 'anthropic'
         else:
-            raise ValueError(
-                f"Cannot infer provider from model_name '{model_name}'. "
-                "Please specify provider explicitly."
-            )
+            # Default to ollama for unknown models (likely local)
+            return 'ollama'
     
-    def _get_api_key(self) -> str:
+    def _get_default_base_url(self) -> Optional[str]:
+        """Get default base URL based on provider."""
+        if self.provider == 'ollama':
+            return 'http://localhost:11434'
+        return None
+    
+    def _get_api_key(self) -> Optional[str]:
         """Get API key from environment based on provider."""
+        # Ollama doesn't require an API key
+        if self.provider == 'ollama':
+            return None
+            
         env_vars = {
             'google': 'GENAI_API_KEY',
             'openai': 'OPENAI_API_KEY',
@@ -112,6 +133,12 @@ class LLMClient:
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
             return Anthropic(api_key=self.api_key)
+        
+        elif self.provider == 'ollama':
+            import ollama
+            # Use native Ollama client
+            return ollama.Client(host=self.base_url)
+        
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
     
@@ -154,6 +181,9 @@ class LLMClient:
         
         elif self.provider == 'anthropic':
             return self._generate_anthropic(prompt, system_message, temperature, max_tokens)
+        
+        elif self.provider == 'ollama':
+            return self._generate_ollama(prompt, system_message, temperature, max_tokens)
     
     def _generate_google(
             self,
@@ -228,6 +258,40 @@ class LLMClient:
         )
         return response.content[0].text
     
+    def _generate_ollama(
+        self,
+        prompt: str,
+        system_message: str,
+        temperature: float,
+        max_tokens: int,
+        thinking_mode=True
+    ) -> str:
+        """Generate using Ollama (OpenAI-compatible API)."""
+        # Set thinking_mode to "high" if the model name contains gpt-oss
+        if "gpt-oss" in self.model_name.lower():
+            thinking_mode = "high"
+        
+        options = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # Some models treat this as a boolean (True/False)
+            # Others (like gpt-oss) might accept strings "low", "medium", "high"
+            'stream': False,
+            "think": thinking_mode
+        }
+        
+        response = ollama.chat(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt}
+            ],
+            options=options
+        )
+        
+        return response['message']['content']
+
+    
 ##############################
 # Pairadigm class
 ############################## 
@@ -246,6 +310,7 @@ class Pairadigm:
                  cgcot_prompts: Optional[List[str]] = None, 
                  model_name: Optional[Union[str, List[str]]] = 'gemini-2.0-flash-exp', 
                  api_key: Optional[Union[str, List[str]]] = None, 
+                 base_url: Optional[Union[str, List[str]]] = None,
                  target_concept: Optional[str] = None,
                  llm_clients: Optional[Union[LLMClient, List[LLMClient]]] = None): 
         """
@@ -284,6 +349,8 @@ class Pairadigm:
             LLM model(s) to use. Can be a single model name or a list of model names.
         api_key : str or List[str], optional
             API key(s) for LLM service(s). Can be a single key or a list of keys.
+        base_url : str or List[str], optional
+            Base URL(s) for LLM service(s). Can be a single URL or a list of URLs.
         target_concept : str, optional
             The concept to evaluate (e.g., "objectivity", "political bias")
         llm_clients : LLMClient or List[LLMClient], optional
@@ -392,33 +459,47 @@ class Pairadigm:
             if isinstance(llm_clients, LLMClient):
                 self.clients = [llm_clients]
             elif isinstance(llm_clients, list):
-                if not all(isinstance(c, LLMClient) for c in llm_clients):
-                    raise TypeError("All items in llm_clients must be LLMClient instances")
                 self.clients = llm_clients
             else:
-                raise TypeError("llm_clients must be an LLMClient instance or a list of LLMClient instances")
+                raise TypeError("llm_clients must be LLMClient or List[LLMClient]")
             # Extract model names from clients
             self.model_names = [client.model_name for client in self.clients]
         else:
-            # Create client(s) from model_name and api_key
+            # Create client(s) from model_name, base_url, and api_key
             if isinstance(model_name, str):
-                # Single model
-                self.clients = [LLMClient(api_key=api_key, model_name=model_name)]
-                self.model_names = [model_name]
-            elif isinstance(model_name, list):
-                # Multiple models
-                if isinstance(api_key, list):
-                    if len(api_key) != len(model_name):
-                        raise ValueError("If api_key is a list, it must have the same length as model_name")
-                    self.clients = [LLMClient(api_key=key, model_name=model) 
-                                  for model, key in zip(model_name, api_key)]
-                else:
-                    # Use same API key for all models
-                    self.clients = [LLMClient(api_key=api_key, model_name=model) 
-                                  for model in model_name]
-                self.model_names = model_name
+                model_name = [model_name]
+            elif not isinstance(model_name, list):
+                raise TypeError("model_name must be str or List[str]")
+            
+            # Normalize base_url to list
+            if base_url is None:
+                base_url = [None] * len(model_name)
+            elif isinstance(base_url, str):
+                base_url = [base_url] * len(model_name)
+            elif isinstance(base_url, list):
+                if len(base_url) != len(model_name):
+                    raise ValueError("If base_url is a list, it must have the same length as model_name")
             else:
-                raise TypeError("model_name must be a string or a list of strings")
+                raise TypeError("base_url must be str, list of str, or None")
+            
+            # Normalize api_key to list
+            if api_key is None:
+                api_key = [None] * len(model_name)
+            elif isinstance(api_key, str):
+                api_key = [api_key] * len(model_name)
+            elif isinstance(api_key, list):
+                if len(api_key) != len(model_name):
+                    raise ValueError("If api_key is a list, it must have the same length as model_name")
+            else:
+                raise TypeError("api_key must be str, list of str, or None")
+            
+            # Create clients with matched parameters
+            self.clients = [
+                LLMClient(api_key=key, model_name=model, base_url=url, provider=None)
+                for model, key, url in zip(model_name, api_key, base_url)
+            ]
+            
+            self.model_names = model_name
         
         # For backward compatibility, set self.client to the first client
         self.client = self.clients[0]
@@ -797,14 +878,15 @@ class Pairadigm:
         return "\n".join(breakdown)
     
     def generate_breakdowns(
-            self,
-            max_workers=8, 
-            rate_limit_per_minute=None,
-            update_dataframe=True,
-            max_tokens: int = 1000,
-            temperature: float = 0.0,
-            client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
-        
+        self,
+        max_workers=8, 
+        rate_limit_per_minute=None,
+        update_dataframe=True,
+        max_tokens: int = 1000,
+        temperature: float = 0.0,
+        client_indices: Optional[Union[int, List[int]]] = None,
+        show_progress: bool = True) -> Dict[Union[str, int], str]:
+    
         """
         Generate CGCoT breakdowns for all items in the DataFrame.
         
@@ -823,6 +905,8 @@ class Pairadigm:
         client_indices : int or List[int], optional
             Index/indices of client(s) to use. 
             If None, uses all clients. If int, uses single client. If list, uses multiple clients.
+        show_progress : bool, default=True
+            If True, displays a progress bar during generation
             
         Returns
         -------
@@ -855,9 +939,20 @@ class Pairadigm:
 
         # Generate breakdowns for each client
         all_results = {}
+        total_items = len(self.data)
+        
         for client_idx, client in clients_to_use:
+            model_name = self.model_names[client_idx]
+            print(f"\n{'='*70}")
+            print(f"Generating breakdowns for {total_items} items using: {model_name}")
+            print(f"{'='*70}")
+            
             results = {}
+            completed = 0
+            failed = 0
+            
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
                 futures = {
                     executor.submit(
                         self._generate_cgcot_breakdown, 
@@ -868,31 +963,152 @@ class Pairadigm:
                         temperature): row[self.item_id_name]
                     for _, row in self.data.iterrows()
                 }
+                
+                # Process completions with progress tracking
                 for future in as_completed(futures):
                     uuid = futures[future]
                     try:
                         results[uuid] = future.result()
+                        completed += 1
                     except Exception as e:
                         results[uuid] = f"ERROR: {e}"
-
+                        failed += 1
+                    
+                    # Show progress
+                    if show_progress:
+                        progress_pct = ((completed + failed) / total_items) * 100
+                        status_bar = f"[{completed + failed}/{total_items}] {progress_pct:.1f}% complete"
+                        
+                        if failed > 0:
+                            status_bar += f" ({completed} success, {failed} failed)"
+                        
+                        print(f"\r{status_bar}", end='', flush=True)
+            
+            # Final newline after progress bar
+            if show_progress:
+                print()  # Newline after progress
+            
+            # Print summary for this client
+            print(f"Completed: {completed}/{total_items} items")
+            if failed > 0:
+                print(f"Failed: {failed} items")
+            
             if update_dataframe:
-                column_name = f'CGCoT_Breakdown_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown'
+                column_name = f'CGCoT_Breakdown_{model_name}' if len(self.clients) > 1 else 'CGCoT_Breakdown'
                 self.data[column_name] = self.data[self.item_id_name].map(results)
             
             all_results[client_idx] = results
-    
+
         if update_dataframe:
-            print(f"Breakdowns added to self.data with column name(s): " +
-                  ", ".join(
-                      [f'CGCoT_Breakdown_{self.model_names[idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown' 
-                       for idx, _ in clients_to_use]
-                  ))
+            print(f"\nBreakdowns added to [object name].data with column name(s): " +
+                ", ".join(
+                    [f'CGCoT_Breakdown_{self.model_names[idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown' 
+                    for idx, _ in clients_to_use]
+                ))
             return None
         
         # Return results for single client if only one was used, otherwise return all
         if len(clients_to_use) == 1:
             return all_results[clients_to_use[0][0]]
         return all_results
+
+    # def generate_breakdowns(
+    #         self,
+    #         max_workers=8, 
+    #         rate_limit_per_minute=None,
+    #         update_dataframe=True,
+    #         max_tokens: int = 1000,
+    #         temperature: float = 0.0,
+    #         client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
+        
+    #     """
+    #     Generate CGCoT breakdowns for all items in the DataFrame.
+        
+    #     Parameters
+    #     ----------
+    #     max_workers : int, default=8
+    #         Number of parallel workers
+    #     rate_limit_per_minute : int, optional
+    #         Rate limit for LLM calls
+    #     update_dataframe : bool, default=True
+    #         If True, adds breakdowns to self.data
+    #     max_tokens : int, default=1000
+    #         Maximum tokens for LLM response
+    #     temperature : float, default=0.0
+    #         Sampling temperature for LLM
+    #     client_indices : int or List[int], optional
+    #         Index/indices of client(s) to use. 
+    #         If None, uses all clients. If int, uses single client. If list, uses multiple clients.
+            
+    #     Returns
+    #     -------
+    #     Dict[Union[str, int], str]
+    #         Mapping of item IDs to breakdowns.
+    #         Also updates self.data with new 'CGCoT_Breakdown' column(s) if update_dataframe is True.
+    #     """
+
+    #     if self.paired:
+    #         raise ValueError("Data is marked as paired. generate_breakdowns() should only be called on unpaired item lists. Use generate_breakdowns_from_paired() instead.")
+
+    #     # Determine which clients to use
+    #     if client_indices is None:
+    #         # Use all clients
+    #         clients_to_use = list(enumerate(self.clients))
+    #     elif isinstance(client_indices, int):
+    #         # Use single client
+    #         if client_indices >= len(self.clients):
+    #             raise ValueError(f"client_indices {client_indices} out of range. Only {len(self.clients)} client(s) available.")
+    #         clients_to_use = [(client_indices, self.clients[client_indices])]
+    #     elif isinstance(client_indices, list):
+    #         # Use specified clients
+    #         clients_to_use = []
+    #         for idx in client_indices:
+    #             if idx >= len(self.clients):
+    #                 raise ValueError(f"client_indices {idx} out of range. Only {len(self.clients)} client(s) available.")
+    #             clients_to_use.append((idx, self.clients[idx]))
+    #     else:
+    #         raise TypeError("client_indices must be None, int, or List[int]")
+
+    #     # Generate breakdowns for each client
+    #     all_results = {}
+    #     for client_idx, client in clients_to_use:
+    #         results = {}
+    #         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #             futures = {
+    #                 executor.submit(
+    #                     self._generate_cgcot_breakdown, 
+    #                     row[self.text_name],
+    #                     client,
+    #                     rate_limit_per_minute,
+    #                     max_tokens,
+    #                     temperature): row[self.item_id_name]
+    #                 for _, row in self.data.iterrows()
+    #             }
+    #             for future in as_completed(futures):
+    #                 uuid = futures[future]
+    #                 try:
+    #                     results[uuid] = future.result()
+    #                 except Exception as e:
+    #                     results[uuid] = f"ERROR: {e}"
+
+    #         if update_dataframe:
+    #             column_name = f'CGCoT_Breakdown_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown'
+    #             self.data[column_name] = self.data[self.item_id_name].map(results)
+            
+    #         all_results[client_idx] = results
+    
+    #     if update_dataframe:
+    #         print(f"Breakdowns added to self.data with column name(s): " +
+    #               ", ".join(
+    #                   [f'CGCoT_Breakdown_{self.model_names[idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown' 
+    #                    for idx, _ in clients_to_use]
+    #               ))
+    #         return None
+        
+    #     # Return results for single client if only one was used, otherwise return all
+    #     if len(clients_to_use) == 1:
+    #         return all_results[clients_to_use[0][0]]
+    #     return all_results
     
     def generate_breakdowns_from_paired(
             self, 
@@ -1340,6 +1556,8 @@ class Pairadigm:
             self.llm_annotated = True
         
         return result_df
+
+
 
 ################################
 # EVALUATION AND VALIDATION
@@ -3619,8 +3837,8 @@ class Pairadigm:
             if not isinstance(obj, Pairadigm):
                 raise TypeError("Loaded object is not a Pairadigm instance")
             
-            # Recreate the LLM clients
-            obj.clients = [LLMClient(model_name=model_name) for model_name in obj.model_names]
+            # Recreate the LLM clients (without requiring API keys for Ollama)
+            obj.clients = [LLMClient(model_name=model_name, api_key=None) for model_name in obj.model_names]
             obj.client = obj.clients[0]  # For backward compatibility
             
             print(f"Pairadigm object loaded successfully from: {filepath}")
@@ -3712,11 +3930,285 @@ def load_pairadigm(filepath: str) -> Pairadigm:
         if not isinstance(obj, Pairadigm):
             raise TypeError("Loaded object is not a Pairadigm instance")
         
-        # Recreate the LLM clients
-        obj.clients = [LLMClient(model_name=model_name) for model_name in obj.model_names]
+        # Recreate the LLM clients (without requiring API keys for Ollama)
+        obj.clients = [LLMClient(model_name=model_name, api_key=None) for model_name in obj.model_names]
         obj.client = obj.clients[0]  # For backward compatibility
         
         print(f"Pairadigm object loaded successfully from: {filepath}")
         return obj
     except Exception as e:
         raise IOError(f"Failed to load Pairadigm object: {e}")
+    
+def build_pairadigm(
+    pairadigm_obj: Pairadigm,
+    num_pairs_per_item: int = 10,
+    random_seed: int = 42,
+    max_workers: int = 8,
+    rate_limit_per_minute: Optional[int] = None,
+    max_tokens: int = 1000,
+    temperature: float = 0.0,
+    allow_ties: bool = False,
+    normalization_scale: str = 'zero-to-one',
+    client_indices: Optional[Union[int, List[int]]] = None,
+    verbose: bool = True) -> Dict[str, Any]:
+    """
+    Execute the full basic workflow for Pairadigm analysis.
+    
+    This function automates the complete pipeline:
+    1. Generate CGCoT breakdowns for all items
+    2. Generate pairings from items
+    3. Generate pairwise LLM annotations
+    4. (Optional) If human annotators exist: run ALT-TEST validation, check transitivity, 
+       compute IRR, and plot epsilon sensitivity
+    
+    Parameters
+    ----------
+    pairadigm_obj : Pairadigm
+        Pairadigm object to process
+    num_pairs_per_item : int, default=10
+        Minimum pairs per item for pairing generation
+    random_seed : int, default=42
+        Random seed for reproducibility
+    max_workers : int, default=8
+        Number of parallel workers for LLM calls
+    rate_limit_per_minute : int, optional
+        Rate limit for API calls
+    max_tokens : int, default=1000
+        Maximum tokens for LLM responses
+    temperature : float, default=0.0
+        Sampling temperature for LLM
+    allow_ties : bool, default=False
+        Whether to allow tie decisions in pairwise comparisons
+    normalization_scale : str, default='zero-to-one'
+        How to normalize Bradley-Terry scores ('zero-to-one', 'negative-one-to-one', 'none')
+    client_indices : int or List[int], optional
+        Specific client(s) to use for generation
+    verbose : bool, default=True
+        Whether to print progress messages
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - 'breakdowns': Breakdown generation results
+        - 'pairings': Generated pairings DataFrame
+        - 'annotations': LLM annotation results DataFrame
+        - 'alt_test': ALT-TEST results (if human annotations exist)
+        - 'transitivity': Transitivity check results (if human annotations exist)
+        - 'irr': Inter-rater reliability results (if human annotations exist)
+        - 'epsilon_sensitivity_data': Data from epsilon sensitivity plot (if human annotations exist)
+        
+    Raises
+    ------
+    ValueError
+        If required components are missing or invalid
+        
+    Examples
+    --------
+    >>> # Basic workflow
+    >>> results = build_pairadigm(pairadigm_obj)
+    >>> print(results.keys())
+    
+    >>> # With custom parameters
+    >>> results = build_pairadigm(
+    ...     pairadigm_obj,
+    ...     num_pairs_per_item=15,
+    ...     allow_ties=True,
+    ...     client_indices=[0, 1]
+    ... )
+    
+    >>> # Check validation results if human annotations exist
+    >>> if 'alt_test' in results:
+    ...     print(f"Winning rate: {results['alt_test'][0]:.3f}")
+    ...     print(f"Advantage prob: {results['alt_test'][1]:.3f}")
+    """
+    
+    if not isinstance(pairadigm_obj, Pairadigm):
+        raise TypeError("pairadigm_obj must be a Pairadigm instance")
+    
+    results = {}
+    
+    # ============================================================
+    # STEP 1: Generate CGCoT Breakdowns
+    # ============================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("STEP 1: GENERATING CGCOT BREAKDOWNS")
+        print("="*70)
+    
+    if pairadigm_obj.cgcot_prompts is None or len(pairadigm_obj.cgcot_prompts) == 0:
+        raise ValueError(
+            "CGCoT prompts must be set before building. "
+            "Use pairadigm_obj.set_cgcot_prompts() to configure prompts."
+        )
+    
+    try:
+        if pairadigm_obj.paired:
+            # For paired data, generate breakdowns from paired items
+            breakdown_results = pairadigm_obj.generate_breakdowns_from_paired(
+                max_workers=max_workers,
+                rate_limit_per_minute=rate_limit_per_minute,
+                update_pairwise_df=True,
+                max_tokens=max_tokens,
+                tempature=temperature,
+                client_indices=client_indices
+            )
+        else:
+            # For unpaired data, generate breakdowns for all items
+            breakdown_results = pairadigm_obj.generate_breakdowns(
+                max_workers=max_workers,
+                rate_limit_per_minute=rate_limit_per_minute,
+                update_dataframe=True,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                client_indices=client_indices,
+                show_progress=verbose
+            )
+        
+        results['breakdowns'] = breakdown_results
+        if verbose:
+            print("✓ Breakdowns generated successfully")
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate breakdowns: {e}")
+    
+    # ============================================================
+    # STEP 2: Generate Pairings
+    # ============================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("STEP 2: GENERATING PAIRINGS")
+        print("="*70)
+    
+    try:
+        pairings_df = pairadigm_obj.generate_pairings(
+            num_pairs_per_item=num_pairs_per_item,
+            random_seed=random_seed,
+            breakdowns=True,
+            update_classObject=True
+        )
+        results['pairings'] = pairings_df
+        if verbose:
+            print(f"✓ Generated {len(pairings_df)} pairings")
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate pairings: {e}")
+    
+    # ============================================================
+    # STEP 3: Generate Pairwise LLM Annotations
+    # ============================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("STEP 3: GENERATING PAIRWISE LLM ANNOTATIONS")
+        print("="*70)
+    
+    try:
+        annotations_df = pairadigm_obj.generate_pairwise_annotations(
+            max_workers=max_workers,
+            update_classObject=True,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            allow_ties=allow_ties,
+            client_indices=client_indices
+        )
+        results['annotations'] = annotations_df
+        if verbose:
+            print(f"✓ Generated annotations for {len(annotations_df)} pairs")
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate pairwise annotations: {e}")
+    
+    # ============================================================
+    # STEP 4: Optional - Validation with Human Annotations
+    # ============================================================
+    if pairadigm_obj.annotated and pairadigm_obj.annotator_cols:
+        if verbose:
+            print("\n" + "="*70)
+            print("STEP 4: VALIDATION AGAINST HUMAN ANNOTATIONS")
+            print("="*70)
+        
+        # 4a: ALT-TEST
+        if verbose:
+            print("\n[4a] Running ALT-TEST...")
+        try:
+            alt_test_results = pairadigm_obj.alt_test(
+                scoring_function='accuracy',
+                epsilon=0.1,
+                q_fdr=0.05,
+                test_all_llms=True
+            )
+            results['alt_test'] = alt_test_results
+            if verbose:
+                print("✓ ALT-TEST completed")
+        except Exception as e:
+            if verbose:
+                print(f"⚠ ALT-TEST failed: {e}")
+            results['alt_test'] = None
+        
+        # 4b: Transitivity Check
+        if verbose:
+            print("\n[4b] Checking transitivity...")
+        try:
+            transitivity_results = pairadigm_obj.check_transitivity()
+            results['transitivity'] = transitivity_results
+            
+            if verbose:
+                print("✓ Transitivity check completed:")
+                for annotator, (score, violations, total) in transitivity_results.items():
+                    print(f"  {annotator}: {score:.3f} ({violations}/{total} violations)")
+        except Exception as e:
+            if verbose:
+                print(f"⚠ Transitivity check failed: {e}")
+            results['transitivity'] = None
+        
+        # 4c: Inter-Rater Reliability
+        if verbose:
+            print("\n[4c] Computing inter-rater reliability...")
+        try:
+            irr_results = pairadigm_obj.irr(
+                method='auto',
+                alpha_level='nominal',
+                min_overlap=2
+            )
+            results['irr'] = irr_results
+            if verbose:
+                print("✓ IRR computed successfully")
+        except Exception as e:
+            if verbose:
+                print(f"⚠ IRR computation failed: {e}")
+            results['irr'] = None
+        
+        # 4d: Epsilon Sensitivity Analysis
+        if verbose:
+            print("\n[4d] Plotting epsilon sensitivity...")
+        try:
+            fig, epsilon_data = pairadigm_obj.plot_epsilon_sensitivity(
+                epsilon_range=(-0.1, 0.25),
+                epsilon_step=0.02,
+                test_all_llms=True,
+                show_annotations=True,
+                return_data=True
+            )
+            results['epsilon_sensitivity_data'] = epsilon_data
+            if verbose:
+                print("✓ Epsilon sensitivity analysis completed")
+        except Exception as e:
+            if verbose:
+                print(f"⚠ Epsilon sensitivity analysis failed: {e}")
+            results['epsilon_sensitivity_data'] = None
+    else:
+        if verbose:
+            print("\n" + "="*70)
+            print("Note: No human annotations found. Skipping validation steps.")
+            print("To enable validation, use append_human_annotations() first.")
+            print("="*70)
+    
+    # ============================================================
+    # Final Summary
+    # ============================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("BUILD COMPLETE")
+        print("="*70)
+        print(f"Results keys: {list(results.keys())}")
+        print("="*70 + "\n")
+    
+    return results
+

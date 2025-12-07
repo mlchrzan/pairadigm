@@ -10,7 +10,7 @@ long_description = (this_directory / "README.md").read_text(encoding='utf-8')
 
 setup(
     name="pairadigm",
-    version="0.2.1",
+    version="0.4.1",
     author="Michael Leon Chrzan",
     author_email="mlchrzan1@gmail.com",  
     description="Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation using Large Language Models",
@@ -50,6 +50,8 @@ setup(
         "scikit-learn>=1.0.0",
         "matplotlib>=3.4.0",
         "seaborn>=0.11.0",
+        "torch>=2.0.0",
+        "transformers>=4.30.0",
     ],
     extras_require={
         "openai": ["openai>=1.0.0"],

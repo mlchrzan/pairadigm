@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pairadigm"
-version = "0.2.1"
+version = "0.4.1"
 description = "Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation using Large Language Models"
 readme = "README.md"
 authors = [
@@ -40,6 +40,8 @@ dependencies = [
     "scikit-learn>=1.0.0",
     "matplotlib>=3.4.0",
     "seaborn>=0.11.0",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
 ]
 
 [project.optional-dependencies]
