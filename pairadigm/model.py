@@ -192,14 +192,14 @@ class RewardModel:
         """
         if self.pairadigm is None:
             raise ValueError("No Pairadigm instance linked to RewardModel.")
-        if not self.pairadigm.pairwise_df.columns.contains(decision_col):
+        if decision_col not in self.pairadigm.pairwise_df.columns:
             raise ValueError(f"Decision column '{decision_col}' not found in pairwise_df. Run generate_pairwise_annotations() first.")
 
         # Calculate margins when desired, if scores are available
         if margins: 
             if not self.pairadigm.scored_df:
                 raise ValueError("No scored_df found in linked Pairadigm instance.")
-            if not self.pairadigm.scored_df.columns.contains(score_col):
+            if score_col not in self.pairadigm.scored_df.columns:
                 raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
             
             pairs = pd.merge(
@@ -337,9 +337,8 @@ class RewardModel:
         """Single training step."""
         self.optimizer.zero_grad()
         
-        # Move batch to device
-        for key in batch:
-            batch[key] = batch[key].to(self.device)
+        # Move batch to device - fix the iteration
+        batch = {key: value.to(self.device) for key, value in batch.items()}
         
         # Get rewards for winner and loser
         reward_winner = self.model(
@@ -357,7 +356,7 @@ class RewardModel:
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
-        
+    
         return loss.item()
     
     def evaluate(self, eval_loader: DataLoader) -> Dict[str, float]:
@@ -376,8 +375,8 @@ class RewardModel:
         
         with torch.no_grad():
             for batch in eval_loader:
-                for key in batch:
-                    batch[key] = batch[key].to(self.device)
+                # Fix the iteration here too
+                batch = {key: value.to(self.device) for key, value in batch.items()}
                 
                 reward_winner = self.model(
                     batch['input_ids_winner'],
@@ -514,8 +513,7 @@ class RewardModel:
         
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Testing"):
-                for key in batch:
-                    batch[key] = batch[key].to(self.device)
+                batch = {key: value.to(self.device) for key, value in batch.items()}
                 
                 reward_winner = self.model(
                     batch['input_ids_winner'],
