@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2025-12-08
+### Added
+- Updated the RewardModel class to create evaluation and test datasets in `prepare_data()` that includes both winning and losing items, allowing for internal assessment of model performance.
+- Added a `test_model()` method to the RewardModel class to evaluate the finetuned model on a separate test dataset and report accuracy.
+
+### Fixed
+- Fixed a bug in `_prepare_pairadigm()` where the check for the decision column in `pairwise_df` was incorrect, which could lead to errors when creating pairs using the `margin` parameter.
+- Updated package imports in `core.py`
+
 ## [0.4.1] - 2025-12-07
 
 ### Added

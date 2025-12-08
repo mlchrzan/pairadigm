@@ -11,7 +11,7 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 ## Updates for version 0.4.1 - 2025-12-07
 
 ### Added
-- **RewardModel Class**: Fine-tune ModernBERT for scalar construct measurement using reward modeling
+- **RewardModel Class**: Fine-tune ModernBERT (or other BERT-type model) for scalar construct measurement using reward modeling
   - Train models on pairwise comparison data
   - Score individual texts or batches on continuous scales
   - Support for custom dropout, max length, and device settings
