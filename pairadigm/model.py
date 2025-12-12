@@ -194,6 +194,8 @@ class RewardModel:
             raise ValueError("No Pairadigm instance linked to RewardModel.")
         if decision_col not in self.pairadigm.pairwise_df.columns:
             raise ValueError(f"Decision column '{decision_col}' not found in pairwise_df. Run generate_pairwise_annotations() first.")
+        if "breakdown1" not in self.pairadigm.pairwise_df.columns or "breakdown2" not in self.pairadigm.pairwise_df.columns:
+            raise ValueError("Breakdown columns not found in pairwise_df. Run generate_breakdowns() and generate_pairings(breakdowns=True) first.")
 
         # Calculate margins when desired, if scores are available
         if margins: 
@@ -202,9 +204,15 @@ class RewardModel:
             if score_col not in self.pairadigm.scored_df.columns:
                 raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
             
+            pairwise_df = self.pairadigm.pairwise_df.copy()
+
+            # For each pair, create 'text1' and 'text2' columns that are everything in breakdown1 and breakdown2 between "Original Text:" and "Prompt 1 Response:"
+            pairwise_df['text1'] = pairwise_df['breakdown1'].str.extract(r'Original Text:(.*?)Prompt 1 Response:', expand=False).str.strip()
+            pairwise_df['text2'] = pairwise_df['breakdown2'].str.extract(r'Original Text:(.*?)Prompt 1 Response:', expand=False).str.strip()
+
             pairs = pd.merge(
-                self.pairadigm.pairwise_df[['item1', 'item2', 
-                                            'breakdown1', 'breakdown2', decision_col]],
+                pairwise_df[['item1', 'item2', 
+                             'text1', 'text2', decision_col]],
                 self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
                     left_on='item1',
                     right_on=self.pairadigm.item_id_name,
@@ -220,8 +228,8 @@ class RewardModel:
 
             # Make a tuple of breakdown1, breakdown2, margin for each row in prepped_data
             training_pairs = list(zip(
-                pairs['breakdown1'],
-                pairs['breakdown2'],
+                pairs['text1'],
+                pairs['text2'],
                 pairs['margin']
             ))
 
@@ -231,9 +239,9 @@ class RewardModel:
         training_pairs = []
         for _, row in self.pairadigm.pairwise_df.iterrows():
             if row[decision_col] == 1 or row[decision_col] == 'Text1':
-                training_pairs.append((row['breakdown1'], row['breakdown2'], 1.0))
+                training_pairs.append((row['text1'], row['text2'], 1.0))
             elif row[decision_col] == 2 or row[decision_col] == 'Text2':
-                training_pairs.append((row['breakdown2'], row['breakdown1'], 1.0))
+                training_pairs.append((row['text2'], row['text1'], 1.0))
             else:
                 continue  # Skip ties or invalid decisions
 
