@@ -207,8 +207,8 @@ class RewardModel:
             pairwise_df = self.pairadigm.pairwise_df.copy()
 
             # For each pair, create 'text1' and 'text2' columns that are everything in breakdown1 and breakdown2 between "Original Text:" and "Prompt 1 Response:"
-            pairwise_df['text1'] = pairwise_df['breakdown1'].str.extract(r'Original Text:(.*?)Prompt 1 Response:', expand=False).str.strip()
-            pairwise_df['text2'] = pairwise_df['breakdown2'].str.extract(r'Original Text:(.*?)Prompt 1 Response:', expand=False).str.strip()
+            pairwise_df['text1'] = pairwise_df['breakdown1'].str.extract(r'Original Text:(.*?)Prompt 1 response:', expand=False).str.strip()
+            pairwise_df['text2'] = pairwise_df['breakdown2'].str.extract(r'Original Text:(.*?)Prompt 1 response:', expand=False).str.strip()
 
             pairs = pd.merge(
                 pairwise_df[['item1', 'item2', 
