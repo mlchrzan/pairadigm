@@ -197,18 +197,28 @@ class RewardModel:
         if "breakdown1" not in self.pairadigm.pairwise_df.columns or "breakdown2" not in self.pairadigm.pairwise_df.columns:
             raise ValueError("Breakdown columns not found in pairwise_df. Run generate_breakdowns() and generate_pairings(breakdowns=True) first.")
 
+        pairwise_df = self.pairadigm.pairwise_df.copy()
+
+        original_text = self.pairadigm.data[[self.pairadigm.item_id_name, 
+                                             self.pairadigm.text_name]].copy()
+        
+        pairwise_df = pd.merge(
+            pairwise_df, original_text,
+            left_on='item1',
+            right_on=self.pairadigm.item_id_name,
+            how='left').rename(columns={self.pairadigm.text_name: 'text1'}).drop(columns=[self.pairadigm.item_id_name]).merge(
+                original_text,
+                left_on='item2',
+                right_on=self.pairadigm.item_id_name,
+                how='left'
+                ).rename(columns={self.pairadigm.text_name: 'text2'}).drop(columns=[self.pairadigm.item_id_name])
+        
         # Calculate margins when desired, if scores are available
         if margins: 
             if not self.pairadigm.scored_df:
                 raise ValueError("No scored_df found in linked Pairadigm instance.")
             if score_col not in self.pairadigm.scored_df.columns:
                 raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
-            
-            pairwise_df = self.pairadigm.pairwise_df.copy()
-
-            # For each pair, create 'text1' and 'text2' columns that are everything in breakdown1 and breakdown2 between "Original Text:" and "Prompt 1 Response:"
-            pairwise_df['text1'] = pairwise_df['breakdown1'].str.extract(r'Original Text:(.*?)Prompt 1 response:', expand=False).str.strip()
-            pairwise_df['text2'] = pairwise_df['breakdown2'].str.extract(r'Original Text:(.*?)Prompt 1 response:', expand=False).str.strip()
 
             pairs = pd.merge(
                 pairwise_df[['item1', 'item2', 
