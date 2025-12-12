@@ -21,6 +21,7 @@ from tqdm import tqdm
 import json
 from sklearn.model_selection import train_test_split
 from pairadigm import Pairadigm
+import copy
 
 
 class RewardModel:
@@ -302,18 +303,23 @@ class RewardModel:
         epochs: int = 5,
         learning_rate: float = 2e-5,
         warmup_steps: int = 100,
-        log_interval: int = 50
+        log_interval: int = 50,
+        early_stopping_patience: int = 3
     ):
         """
-        Train the reward model on pairwise comparison data.
-        
+        Train the reward model on pairwise comparison data with optional early stopping.
+
         Args:
             train_loader: DataLoader with training pairs
-            eval_loader: DataLoader for evaluation
+            eval_loader: DataLoader for evaluation (required for early stopping)
             epochs: Number of training epochs
             learning_rate: Learning rate for optimizer
             warmup_steps: Number of warmup steps for scheduler
             log_interval: Log metrics every N steps
+            early_stopping_patience: Number of epochs with no improvement on eval loss before stopping early.
+                                     Set to None or 0 to disable early stopping.
+        Returns:
+            The model (self.model) restored to the best-performing weights observed on eval data.
         """
         self.model.train()
         
@@ -325,6 +331,12 @@ class RewardModel:
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps
         )
+
+        # Early stopping bookkeeping
+        best_state = None
+        best_eval_loss = float('inf')
+        epochs_without_improve = 0
+        use_early_stopping = bool(early_stopping_patience and eval_loader is not None and early_stopping_patience > 0)
         
         for epoch in range(epochs):
             epoch_loss = 0
@@ -348,8 +360,38 @@ class RewardModel:
                 eval_metrics = self.evaluate(eval_loader)
                 epoch_metrics.update(eval_metrics)
                 print(f"Epoch {epoch + 1} - Eval Loss: {eval_metrics['eval_loss']:.4f}, Eval Accuracy: {eval_metrics['eval_accuracy']:.4f}")
+                
+                # Check for improvement on eval_loss and save best model
+                current_eval_loss = eval_metrics.get('eval_loss', float('inf'))
+                if current_eval_loss < best_eval_loss:
+                    best_eval_loss = current_eval_loss
+                    # store a CPU copy of the state dict
+                    best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                    epochs_without_improve = 0
+                    print(f"  New best model found (eval_loss improved to {best_eval_loss:.4f}).")
+                else:
+                    epochs_without_improve += 1
+                    print(f"  No improvement for {epochs_without_improve} epoch(s).")
+            
+            else:
+                # If no eval_loader provided, we can't do early stopping / track best by eval
+                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
             
             self.training_history.append(epoch_metrics)
+
+            # Early stopping check
+            if use_early_stopping and epochs_without_improve >= early_stopping_patience:
+                print(f"Early stopping triggered after {epoch + 1} epochs (no improvement in eval loss for {early_stopping_patience} epochs).")
+                break
+        
+        # Restore best model weights if we tracked them
+        if best_state is not None:
+            # move tensors back to device as needed when loading
+            device_state = {k: v.to(self.device) for k, v in best_state.items()}
+            self.model.load_state_dict(device_state)
+            print("Best model weights restored based on eval data.")
+        
+        return self.model
     
     def _training_step(self, batch) -> float:
         """Single training step."""
