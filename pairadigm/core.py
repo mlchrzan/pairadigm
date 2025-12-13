@@ -39,11 +39,11 @@ class LLMClient:
     api_key : str, optional
         API key for the LLM service. If None, reads from environment
     model_name : str
-        Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4', 'llama3.2')
+        Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4', 'llama3.2', 'meta-llama/Llama-3.3-70B-Instruct')
     base_url : str, optional
         Base URL for the LLM service API (default: 'http://localhost:11434' for Ollama)
     provider : str, optional
-        Force specific provider ('google', 'openai', 'anthropic', 'ollama'). 
+        Force specific provider ('google', 'openai', 'anthropic', 'ollama', 'huggingface'). 
         If None, infers from model_name
     """
     
@@ -64,7 +64,12 @@ class LLMClient:
         """Infer provider from model name."""
         model_lower = model_name.lower()
         
-        # Check for Ollama-specific patterns first (colon indicates local model tag)
+        # Check for HuggingFace patterns (model names with / or common HF orgs)
+        hf_patterns = ['/', 'meta-llama', 'mistralai', 'tiiuae', 'bigscience', 'eleutherai']
+        if any(pattern in model_name for pattern in hf_patterns):
+            return 'huggingface'
+        
+        # Check for Ollama-specific patterns (colon indicates local model tag)
         if ':' in model_name:
             return 'ollama'
         
@@ -100,7 +105,8 @@ class LLMClient:
         env_vars = {
             'google': 'GENAI_API_KEY',
             'openai': 'OPENAI_API_KEY',
-            'anthropic': 'ANTHROPIC_API_KEY'
+            'anthropic': 'ANTHROPIC_API_KEY',
+            'huggingface': 'HUGGINGFACE_API_KEY'
         }
         
         env_var = env_vars.get(self.provider)
@@ -135,6 +141,10 @@ class LLMClient:
             import ollama
             # Use native Ollama client
             return ollama.Client(host=self.base_url)
+        
+        elif self.provider == 'huggingface':
+            from huggingface_hub import InferenceClient
+            return InferenceClient(token=self.api_key)
         
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
@@ -181,6 +191,9 @@ class LLMClient:
         
         elif self.provider == 'ollama':
             return self._generate_ollama(prompt, system_message, temperature, max_tokens)
+        
+        elif self.provider == 'huggingface':
+            return self._generate_huggingface(prompt, system_message, temperature, max_tokens)
     
     def _generate_google(
             self,
@@ -287,6 +300,35 @@ class LLMClient:
         )
         
         return response['message']['content']
+    
+    def _generate_huggingface(
+        self,
+        prompt: str,
+        system_message: str,
+        temperature: float,
+        max_tokens: int
+    ) -> str:
+        """Generate using HuggingFace Hub Inference API."""
+        # Format messages for chat completion
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ]
+        
+        try:
+            # Use OpenAI-compatible chat completions endpoint
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            # Extract text from response
+            return response.choices[0].message.content
+                
+        except Exception as e:
+            raise RuntimeError(f"HuggingFace inference failed: {e}")
 
     
 ##############################
