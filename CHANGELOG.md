@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-14 - A Big Hug! 🤗
+### Added 
+- Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
+- Finetuning now returns the best model based on validation performance rather than the last epoch.
+- RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
+- Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
+
+### Fixed
+- Changed the `_prepped_pairadigm` function to correctly use the item text instead of the breakdown columns when creating pairs. Text is merged from the original data given to the pairadigm instance.
+
 ## [0.4.2] - 2025-12-08
 ### Added
 - Updated the RewardModel class to create evaluation and test datasets in `prepare_data()` that includes both winning and losing items, allowing for internal assessment of model performance.

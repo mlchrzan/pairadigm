@@ -1,25 +1,19 @@
-# Pairadigm
+# pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models
 
-A Python library for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation using Large Language Models (LLMs). Pairadigm enables systematic evaluation of text items along specific conceptual dimensions through structured pairwise comparisons.
+`pairadigm` is a Python library designed to streamline the creation of high-quality, continuous measurement scales from text using LLMs. It implements a **Concept-Guided Chain-of-Thought (CGCoT)** methodology to generate reasoned pairwise comparisons using state-of-the-art LLMs (e.g., Google Gemini, OpenAI GPTs, Anthropic Claude, and open source models). It then converts these comparisons into continuous scores using the Bradley-Terry model and provides a pipeline both evaluate LLM score using human annotations and to fine-tune efficient encoder models (e.g., ModernBERT) as reward models for scaling measurement to larger datasets.
 
 ## Overview
 
-Pairadigm uses a multi-stage CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic) and includes validation tools for comparing LLM annotations against human judgments. 
+Pairadigm uses a CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic, Ollama, HuggingFace) and includes validation tools for comparing LLM annotations against human judgments. 
 
-You can see a full example of the package in use in the `example.ipynb` notebook along with some dummy code below.
+You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below.
 
-## Updates for version 0.4.1 - 2025-12-07
-
-### Added
-- **RewardModel Class**: Fine-tune ModernBERT (or other BERT-type model) for scalar construct measurement using reward modeling
-  - Train models on pairwise comparison data
-  - Score individual texts or batches on continuous scales
-  - Support for custom dropout, max length, and device settings
-  - Built-in score normalization to desired scales
-  - Save/load trained models for reuse
-- Support for Ollama LLMs (local models) with `think` parameter
-- `build_pairadigm()` function to run full pipeline in one command
-- Enhanced progress monitoring for CGCoT breakdown generation
+## Updates for version [0.5.0] - 2025-12-14 - A Big Hug! 🤗
+### Added 
+- Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
+- Finetuning now returns the best model based on validation performance rather than the last epoch.
+- RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
+- Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
 
 ## Installation
 
@@ -32,7 +26,11 @@ You can see a full example of the package in use in the `example.ipynb` notebook
 In the terminal, follow these steps:
 1. Install the package:
 ```bash
+# For development version
 pip install git+https://github.com/mlchrzan/pairadigm.git
+
+# For latest stable release (when available)
+pip install pairadigm
 ```
 
 2. Set up environment variables:
@@ -426,6 +424,20 @@ For questions and issues:
 - Support for multiple concepts simultaneously (NOT STARTED)
 
 # Previous Updates (see CHANGELOG.md for all)
+
+## Updates for version 0.4.1 - 2025-12-07
+
+### Added
+- **RewardModel Class**: Fine-tune ModernBERT (or other BERT-type model) for scalar construct measurement using reward modeling
+  - Train models on pairwise comparison data
+  - Score individual texts or batches on continuous scales
+  - Support for custom dropout, max length, and device settings
+  - Built-in score normalization to desired scales
+  - Save/load trained models for reuse
+- Support for Ollama LLMs (local models) with `think` parameter
+- `build_pairadigm()` function to run full pipeline in one command
+- Enhanced progress monitoring for CGCoT breakdown generation
+
 ## Updates for version 0.3.1 - 2025-11-12
 
 ### Added
