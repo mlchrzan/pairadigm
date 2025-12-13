@@ -648,3 +648,45 @@ class RewardModel:
         
         self.training_history = checkpoint.get('training_history', [])
         print(f"Model loaded from {path}")
+
+    def push_to_hub(self, repo_id: str, private: bool = True):
+        """
+        Push the trained model to HuggingFace Hub.
+        
+        Args:
+            repo_id: Repository ID in format "username/repo-name"
+            private: Whether to make the repository private (default True)
+        """
+        from huggingface_hub import create_repo, upload_folder
+        import os
+        
+        # Create a temporary directory for the model files
+        temp_dir = f"./temp_model_{repo_id.split('/')[-1]}"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        try:
+            # Save encoder and reward head
+            self.model.encoder.save_pretrained(os.path.join(temp_dir, "encoder"))
+            self.tokenizer.save_pretrained(temp_dir)
+            torch.save(self.model.reward_head.state_dict(), os.path.join(temp_dir, "reward_head.pt"))
+            
+            # Save metadata
+            metadata = {
+                'model_name': self.model_name,
+                'max_length': self.max_length,
+                'training_history': self.training_history
+            }
+            with open(os.path.join(temp_dir, "training_metadata.json"), 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            # Create and upload to Hub
+            create_repo(repo_id, private=private, exist_ok=True)
+            upload_folder(repo_name=repo_id, folder_path=temp_dir, repo_type="model")
+            
+            print(f"Model successfully pushed to HuggingFace Hub: https://huggingface.co/{repo_id}")
+        
+        finally:
+            # Clean up temporary directory
+            import shutil
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
