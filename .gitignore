@@ -16,6 +16,7 @@ experiments/
 
 test 0-4-1.ipynb
 test install.ipynb
+OLD example.ipynb
 
 # Python
 __pycache__/
