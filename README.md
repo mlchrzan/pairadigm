@@ -8,7 +8,7 @@ Pairadigm uses a CGCoT prompting approach to break down complex concepts into an
 
 You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below.
 
-## Updates for version [0.5.0] - 2025-12-14 - A Big Hug! 🤗
+## Updates for version [0.5.1] - 2025-12-14 - A Big Hug! 🤗
 ### Added 
 - Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
 - Finetuning now returns the best model based on validation performance rather than the last epoch.
