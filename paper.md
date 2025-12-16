@@ -5,6 +5,8 @@ tags:
   - machine learning
   - natural language processing
   - psychometrics
+  - measurement
+  - reinforcement learning from human feedback
   - large language models
   - pairwise comparison
   - bradley-terry model
@@ -21,13 +23,19 @@ author: |
 date: 17 December 2025
 bibliography: paper.bib
 geometry: margin=1in
+fontsize: 11pt
+documentclass: article
 pdf-engine: pdflatex
+colorlinks: true
+linkcolor: blue
+urlcolor: blue
+citecolor: blue
 header-includes:
   - \usepackage{fvextra}
   - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
 ---
 
-<!-- Command for rendering the pdf: pandoc paper.md -o paper.pdf --pdf-engine=xelatex --citeproc -->
+<!-- Command for rendering the pdf: pandoc paper.md -o paper.pdf --pdf-engine=xelatex --citeproc --> 
 
 # Summary
 
@@ -169,9 +177,18 @@ pairadigm places a heavy emphasis on validation. It includes automated generatio
 * Alternative Annotator Test (AltTest): To compare LLM-derived scores against human annotations [@calderon:2025].
 * More to come!
 
+# Contributing
+Contributions are welcome! Please submit issues or pull requests on the [GitHub repository](https://github.com/mlchrzan/pairadigm) or email the author directly at mlchrzan@umd.edu. 
+
+In particular, we are looking for:
+
+* New LLM validation techniques as they emerge in the literature.
+* Improved modeling of ground truth from human gold-standard data as well as mixed LLM and human annotations.
+* Enhanced reward modeling architectures and loss functions.
+* Additional LLM client integrations (e.g., more open-source models).
 
 # Acknowledgements
-We acknowledge the contributions of the open-source community, particularly the maintainers of choix, transformers, and pandas. We also thank the co-learning community at the Center for Educational Data Science and Innovation at the University of Maryland for their support and feedback during development.
+We acknowledge the contributions of the open-source community, particularly the maintainers of choix, transformers, and pandas. We also thank the co-learning community at the [Center for Educational Data Science and Innovation at the University of Maryland](https://edsi.umd.edu/) for their support and feedback during development.
 
 # References
 ::: {#refs}

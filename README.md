@@ -29,7 +29,7 @@ In the terminal, follow these steps:
 # For development version
 pip install git+https://github.com/mlchrzan/pairadigm.git
 
-# For latest stable release (when available)
+# For latest stable release 
 pip install pairadigm
 ```
 
