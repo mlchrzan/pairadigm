@@ -1,0 +1,178 @@
+---
+title: 'pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models'
+tags:
+  - Python
+  - machine learning
+  - natural language processing
+  - psychometrics
+  - large language models
+  - pairwise comparison
+  - bradley-terry model
+authors:
+  - name: [Michael Leon Chrzan]
+    orcid: [0009-0004-0957-3857] 
+    affiliation: [Center for Educational Data Science and Innovation, University of Maryland,  College Park MD USA]
+author: |
+  Michael Leon Chrzan \
+  Center for Educational Data Science and Innovation \
+  University of Maryland \
+  College Park MD USA \
+  ORCID: 0009-0004-0957-3857
+date: 17 December 2025
+bibliography: paper.bib
+geometry: margin=1in
+pdf-engine: pdflatex
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+<!-- Command for rendering the pdf: pandoc paper.md -o paper.pdf --pdf-engine=xelatex --citeproc -->
+
+# Summary
+
+Measurement in the social sciences and Natural Language Processing (NLP) often relies on converting unstructured text into quantitative scales. While Large Language Models (LLMs) have demonstrated a possible ability to annotate text, they frequently struggle with reliably and consistently doing so, especially when providing direct scalar ratings (e.g., "Rate this text 1-5 for incivility"), due to calibration issues and lack of consistency. Pairwise comparison—determining which of two items exhibits more of a specific trait—is a robust psychometric alternative that has been shown to reduce cognitive load and improves reliability in humans [@thurstone:1927] and now has shown promise in helping improve LLM annotations as well.
+
+`pairadigm` is a Python library designed to streamline the creation of high-quality, continuous measurement scales from text using LLMs. It implements a **Concept-Guided Chain-of-Thought (CGCoT)** methodology to generate reasoned pairwise comparisons using state-of-the-art LLMs (e.g., Google Gemini, OpenAI GPTs, Anthropic Claude, and open source models) [@wu:2024]. It then converts these comparisons into continuous scores using the Bradley-Terry model [@bradley:1952] and provides a pipeline both evaluate LLM score using human annotations and to fine-tune efficient encoder models (e.g., ModernBERT) as reward models for scaling measurement to larger datasets.
+
+# Statement of Need
+
+Researchers in computational social science, psychology, education, and NLP frequently need to measure abstract constructs (e.g., "politeness," "toxicity," "creativity", "reasoning") in large corpora. Existing workflows often require stitching together disparate tools for:
+1.  Interfacing with LLM APIs.
+2.  Managing pairwise comparison logistics.
+3.  Calculating psychometric scores.
+4.  Validating results against human labels.
+5.  Training downstream classifiers.
+
+`pairadigm` unifies these steps into a single, object-oriented workflow. It fills a gap between general-purpose LLM libraries and specialized psychometric tools (like `choix`). Specifically, it allows researchers to:
+
+* **Generate High-Fidelity Data:** Use the `LLMClient` to drive diverse backends (Google, OpenAI, Anthropic, Ollamam, HuggingFace) with a unified interface for chain-of-thought reasoning.
+* **Validate Rigorously:** The library includes built-in methods for assessing transitivity violations, calculating reliabilities, and performing sensitivity analysis to detect model brittleness. These methods will continue to be updated as new validation techniques emerge in the literature.
+* **Align with Humans:** It provides methods to include or append human gold-standard labels into the workflow to compute LLM-Human alignment and Inter-Rater Reliability (IRR) [@cohen:1960].
+* **Scale Efficiently:** The `RewardModel` class implements a complete training loop to distill the LLM's pairwise preferences into a localized BERT-based model (following the InstructGPT reward modeling approach [@ouyang:2022]), allowing for the cost-effective scoring of millions of documents without further API calls.
+
+# Functionality and Architecture
+
+The package is structured around two primary modules: `core` and `model`.
+
+### The Core Paradigm
+The `Pairadigm` class manages the measurement lifecycle. It handles data ingestion and executes pairwise comparisons using LLM clients and scores those annotations using a Bradley-Terry model. A key innovation is the integration of Concept-Guided Chain-of-Thought prompting, where the LLM must articulate its reasoning based on a resercher-designed prompts to critically evaluate the text before making the binary choice.
+
+### Installation
+```bash
+# For development version
+pip install git+https://github.com/mlchrzan/pairadigm.git
+
+# For latest stable release
+pip install pairadigm
+```
+
+Here is an example workflow for measuring emotional valence in text using EMOBANK scores [@buechel:2022] using GPT-5.1 in `pairadigm`:
+
+```python
+import pairadigm as pdm
+import pandas as pd 
+import os 
+import dotenv
+dotenv.load_dotenv()
+
+# NOTE: This example uses the EMOBANK dataset for measuring emotional valence 
+# and requires an API key for OpenAI to be set in your environment.
+
+# Download EmoBank dataset if not already present
+def download_emobank():
+    """Download the EmoBank dataset from the official source."""
+    url = "https://github.com/JULIELab/EmoBank/raw/master/corpus/emobank.csv"
+    
+    # Save to current working directory
+    file_path = Path("data/emobank.csv")
+    
+    if not file_path.exists():
+        print("Downloading EmoBank dataset...")
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        print(f"Downloaded EmoBank dataset to {file_path}")
+    else:
+        print(f"EmoBank dataset already exists at {file_path}")
+    
+    return file_path
+
+# Download the dataset
+emobank_path = download_emobank()
+
+# Load sample data
+data = pd.read_csv(emobank_path)
+
+# Craft CGCoT prompts for valence measurement
+cgcot_prompts = [
+    "Summarize the text in one clear sentence: {text}",
+    "Who or what is the primary target or focus of the following text (person, group, idea, object, or no clear target)? Answer with a short label. Text: {text}", 
+    "Describe the overall evaluative tone toward the target in the following text using concrete words (examples: praising, appreciative, approving, congratulatory; neutral, descriptive, matter-of-fact; critical, hostile, insulting, disparaging). Text: {text}",
+    "Based on your previous analysis, provide a single categorical judgment: does the following text express Positive, Neutral, or Negative valence toward the identified target? Answer with only one of those three words. Text: {text}"
+]
+
+# Initialize measurement for a specific construct
+p_valence = pdm.Pairadigm(
+    data = data,
+    item_id_name = 'id',
+    text_name = 'text',
+    cgcot_prompts = cgcot_prompts, # Used to generate breakdowns for comparison
+    model_name = 'gpt-5.1', 
+    api_key = os.getenv('OPENAI_API_KEY'),
+    target_concept = 'valence' # This is used in the internal comparison prompt
+)
+
+# Run pairwise annotation
+build_pairadigm(p_valence)
+
+# Evaluate and score items
+p_valence.check_transitivity()
+p_valence.score_items(normalization_scale='negative-one-to-one')
+```
+
+The core module utilizes choix [@maystre:2015] for the underlying spectral ranking and Bradley-Terry optimization, while adding layers for error handling, retry logic, and concurrent API execution. This example demonstrates how `pairadigm` abstracts away the complexities of prompt engineering, API management, and psychometric scoring into a streamlined interface. It can further be extended to incorporate paired human annotations for model validation.
+
+### Reward Modeling for Scale
+Once a reliable scale is constructed via the Pairadigm class, the model module allows users to train a dedicated reward model. The RewardModel class leverages the Hugging Face transformers library to fine-tune architectures like ModernBERT [@answerdotai:2024] using a pairwise loss function.
+
+```python
+from pairadigm.model import RewardModel
+
+model = RewardModel(model_name="answerdotai/ModernBERT-large",
+                    Pairadigm=p_valence)
+model.model.to(model.device)
+
+# Use the pairadigm object's internal data and decisions to prepare data loaders
+dataloaders = model.prepare_data(test_size=0.15, eval_size=0.15, batch_size=4)
+
+# Access the loaders
+train_loader = dataloaders['train']
+eval_loader = dataloaders['eval']
+test_loader = dataloaders['test']
+
+# Train and evaluate a scalar measurement model
+model.train(train_loader, eval_loader, epochs=10, learning_rate=2e-5)
+model.test_model(test_loader)
+model.save_model("valence_reward_model")
+```
+
+This functionality democratizes the "Reward Modeling" phase of RLHF (Reinforcement Learning from Human Feedback), repurposing it for social science measurement as described in recent literature [@licht:2025].
+
+# Quality Control and Visualization
+pairadigm places a heavy emphasis on validation. It includes automated generation of:
+
+* Transitivity Analysis: To measure logical consistency in annotator choices.
+* Inter-Rater Reliability (IRR): Using Cohen's Kappa, Fleiss' Kappa, or Krippendorff's Alpha to assess agreement between LLMs and humans.
+* Alternative Annotator Test (AltTest): To compare LLM-derived scores against human annotations [@calderon:2025].
+* More to come!
+
+
+# Acknowledgements
+We acknowledge the contributions of the open-source community, particularly the maintainers of choix, transformers, and pandas. We also thank the co-learning community at the Center for Educational Data Science and Innovation at the University of Maryland for their support and feedback during development.
+
+# References
+::: {#refs}
+:::
