@@ -27,10 +27,3 @@ jobs:
           # PDF. Note, this should be the same directory as the input
           # paper.md
           path: paper.pdf
-      - name: Commit PDF to repository
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add paper.pdf
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update PDF of the paper.pdf in the repo files"
-          git push
