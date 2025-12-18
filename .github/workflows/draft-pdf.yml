@@ -11,18 +11,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      # - name: Install TeX dependencies
-      #   run: sudo apt-get update && sudo apt-get install -y texlive-latex-extra
       - name: Install TeX dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y texlive-latex-extra texlive-extra-utils texlive-latex-recommended
-          sudo apt-get install -y texlive-fonts-recommended texlive-fonts-extra
-          sudo apt-get install -y perl
-          sudo apt-get install -y texlive
-          sudo tlmgr install fvextra
-      # - name: Install fvextra
-      #   run: sudo tlmgr install fvextra
+        run: sudo apt-get update && sudo apt-get install -y texlive-latex-extra texlive-extra-utils texlive-latex-recommended
       - name: Build draft PDF
         uses: openjournals/openjournals-draft-action@master
         with:
