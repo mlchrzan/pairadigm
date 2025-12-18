@@ -11,9 +11,9 @@ tags:
   - pairwise comparison
   - bradley-terry model
 authors:
-  - name: [Michael Leon Chrzan]
-    orcid: [0009-0004-0957-3857] 
-    affiliation: [Center for Educational Data Science and Innovation, University of Maryland,  College Park MD USA]
+  - name: Michael Leon Chrzan
+    orcid: 0009-0004-0957-3857 
+    affiliation: Center for Educational Data Science and Innovation, University of Maryland,  College Park MD USA
 author: |
   Michael Leon Chrzan \
   Center for Educational Data Science and Innovation \
