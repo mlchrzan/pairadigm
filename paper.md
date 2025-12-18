@@ -30,9 +30,6 @@ colorlinks: true
 linkcolor: blue
 urlcolor: blue
 citecolor: blue
-header-includes:
-  - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
 ---
 
 <!-- Command for rendering the pdf: pandoc paper.md -o paper.pdf --pdf-engine=xelatex --citeproc --> 
@@ -117,9 +114,18 @@ data = pd.read_csv(emobank_path)
 # Craft CGCoT prompts for valence measurement
 cgcot_prompts = [
     "Summarize the text in one clear sentence: {text}",
-    "Who or what is the primary target or focus of the following text (person, group, idea, object, or no clear target)? Answer with a short label. Text: {text}", 
-    "Describe the overall evaluative tone toward the target in the following text using concrete words (examples: praising, appreciative, approving, congratulatory; neutral, descriptive, matter-of-fact; critical, hostile, insulting, disparaging). Text: {text}",
-    "Based on your previous analysis, provide a single categorical judgment: does the following text express Positive, Neutral, or Negative valence toward the identified target? Answer with only one of those three words. Text: {text}"
+    ("Who or what is the primary target or focus of the following text "
+     "(person, group, idea, object, or no clear target)? "
+     "Answer with a short label. Text: {text}"), 
+    ("Describe the overall evaluative tone toward the target in the "
+     "following text using concrete words (examples: praising, "
+     "appreciative, approving, congratulatory; neutral, descriptive, "
+     "matter-of-fact; critical, hostile, insulting, disparaging). "
+     "Text: {text}"),
+    ("Based on your previous analysis, provide a single categorical "
+     "judgment: does the following text express Positive, Neutral, or "
+     "Negative valence toward the identified target? Answer with only "
+     "one of those three words. Text: {text}")
 ]
 
 # Initialize measurement for a specific construct
