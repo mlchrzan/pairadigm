@@ -3,7 +3,6 @@ on:
   push:
     paths:
       - 'paper.md'
-      - 'paper.bib'
 
 jobs:
   paper:
