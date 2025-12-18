@@ -15,8 +15,8 @@ jobs:
       #   run: sudo apt-get update && sudo apt-get install -y texlive-latex-extra
       - name: Install TeX dependencies
         run: sudo apt-get update && sudo apt-get install -y texlive-latex-extra texlive-extra-utils texlive-latex-recommended
-      # - name: Install fvextra
-      #   run: sudo tlmgr install fvextra
+      - name: Install fvextra
+        run: sudo tlmgr install fvextra
       - name: Build draft PDF
         uses: openjournals/openjournals-draft-action@master
         with:
