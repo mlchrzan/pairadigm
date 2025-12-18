@@ -2,6 +2,8 @@
 
 `pairadigm` is a Python library designed to streamline the creation of high-quality, continuous measurement scales from text using LLMs. It implements a **Concept-Guided Chain-of-Thought (CGCoT)** methodology to generate reasoned pairwise comparisons using state-of-the-art LLMs (e.g., Google Gemini, OpenAI GPTs, Anthropic Claude, and open source models). It then converts these comparisons into continuous scores using the Bradley-Terry model and provides a pipeline both evaluate LLM score using human annotations and to fine-tune efficient encoder models (e.g., ModernBERT) as reward models for scaling measurement to larger datasets.
 
+[![DOI](https://zenodo.org/badge/1071720356.svg)](https://doi.org/10.5281/zenodo.17981011)
+
 ## Overview
 
 Pairadigm uses a CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic, Ollama, HuggingFace) and includes validation tools for comparing LLM annotations against human judgments. 
