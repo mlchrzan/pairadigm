@@ -385,14 +385,17 @@ The `data/` directory contains sample datasets to help you get started:
 
 ## Citation
 
-If you use Pairadigm in your research, please cite:
+If you use `pairadigm` in your research, please cite:
 
 ```bibtex
 @software{pairadigm2025,
   author = {Chrzan, M.L.},
-  title = {pairadigm: Concept-Guided Chain-of-Thought Pairwise Annotation},
+  title = {pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models},
   year = {2025},
-  url = {https://github.com/mlchrzan/pairadigm}
+  month = {December},
+  version = {0.5.1},
+  url = {https://github.com/mlchrzan/pairadigm},
+  doi = {10.5281/zenodo.17981011}
 }
 ```
 
