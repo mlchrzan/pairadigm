@@ -402,9 +402,9 @@ If you use `pairadigm` in your research, please cite:
 @software{pairadigm2025,
   author = {Chrzan, M.L.},
   title = {pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models},
-  year = {2025},
-  month = {December},
-  version = {0.5.1},
+  year = {2026},
+  month = {March},
+  version = {0.5.3},
   url = {https://github.com/mlchrzan/pairadigm},
   doi = {10.5281/zenodo.17981011}
 }

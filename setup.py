@@ -10,7 +10,7 @@ long_description = (this_directory / "README.md").read_text(encoding='utf-8')
 
 setup(
     name="pairadigm",
-    version="0.5.1",
+    version="0.5.3",
     author="Michael Leon Chrzan",
     author_email="mlchrzan1@gmail.com",  
     description="Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation using Large Language Models",
