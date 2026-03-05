@@ -22,6 +22,7 @@ import json
 from sklearn.model_selection import train_test_split
 from pairadigm import Pairadigm
 import copy
+import warnings
 
 
 class RewardModel:
@@ -108,7 +109,10 @@ class RewardModel:
     
     def prepare_data(
         self,
-        pairs: Optional[List[Tuple[str, str, Union[int, float]]]] = None,
+        pairs: Optional[List[Union[
+            Tuple[str, str, Union[int, float]],
+            Tuple[str, str, Union[int, float], str]
+        ]]] = None,
         batch_size: int = 16,
         shuffle: bool = True,
         decision_col: str = "decision",
@@ -122,74 +126,194 @@ class RewardModel:
         """
         Prepare training, evaluation, and test data from pairwise comparisons.
 
+        Split resolution priority (highest to lowest):
+        1. Pairadigm-defined item-level splits — when a linked Pairadigm instance
+           has 'item1_split'/'item2_split' columns (generate_pairings(make_splits=True)).
+        2. Provided split labels — when pairs are 4-tuples
+           (text_winner, text_loser, margin, split) where split is 'train', 'eval', or 'test'.
+        3. Random pair-level split — when pairs are 3-tuples with no split label.
+           A UserWarning is raised in this case because the same item can appear in
+           multiple splits, which may cause data leakage.
+
+        In cases (1) and (2), test_size/eval_size/stratify/random_state are ignored.
+
         Args:
-            pairs: Optional list of (text_winner, text_loser, margin) tuples. If None and a Pairadigm instance is linked, will use Pairadigm.
+            pairs: Optional list of tuples, either:
+                - (text_winner, text_loser, margin) — 3-tuple, random split applied with
+                  a data-leakage warning.
+                - (text_winner, text_loser, margin, split) — 4-tuple where split is one
+                  of 'train', 'eval', 'test'; split labels are used directly.
+                If None and a Pairadigm instance is linked, pairs are drawn from it.
             batch_size: Batch size for training
             shuffle: Whether to shuffle the training data
             decision_col: Column name for decision in pairwise_df
             score_col: Column name for scores in scored_df
             margins: Whether to compute margins from scores
-            test_size: Proportion of data for test set (default 0.15)
-            eval_size: Proportion of data for eval set (default 0.15)
-            stratify: Optional list of labels for stratified splitting
-            random_state: Random seed for reproducibility
+            test_size: Proportion of data for test set (default 0.15). Ignored when
+                split labels are already defined.
+            eval_size: Proportion of data for eval set (default 0.15). Ignored when
+                split labels are already defined.
+            stratify: Optional list of labels for stratified splitting. Ignored when
+                split labels are already defined.
+            random_state: Random seed for reproducibility. Ignored when split labels
+                are already defined.
 
         Returns:
             Dictionary with 'train', 'eval', and 'test' DataLoaders
         """
+        splits_defined = False
+        train_pairs = eval_pairs = test_pairs = None
+
+        # ------------------------------------------------------------------
+        # 1. Resolve pairs source
+        # ------------------------------------------------------------------
         if pairs is None and self.pairadigm:
-            pairs = self._prepare_pairadigm(
-                decision_col=decision_col, 
-                score_col=score_col, 
+            result = self._prepare_pairadigm(
+                decision_col=decision_col,
+                score_col=score_col,
                 margins=margins
             )
+            if isinstance(result, dict):
+                # Pairadigm item-level splits
+                train_pairs = result['train']
+                eval_pairs  = result['eval']
+                test_pairs  = result['test']
+                splits_defined = True
+                print(
+                    f"Using Pairadigm-defined splits — "
+                    f"Train: {len(train_pairs)}, Eval: {len(eval_pairs)}, Test: {len(test_pairs)}"
+                )
+            else:
+                # Pairadigm without item-level splits — fall through to random splitting
+                pairs = result
         elif pairs is None:
             raise ValueError("No pairs provided and no Pairadigm instance linked.")
-        
-        # Split data: first split into train+eval and test
-        train_eval_pairs, test_pairs = train_test_split(
-            pairs,
-            test_size=test_size,
-            stratify=stratify,
-            random_state=random_state
-        )
-        
-        # Then split train+eval into train and eval
-        # Adjust eval_size to be relative to train+eval size
-        adjusted_eval_size = eval_size / (1 - test_size)
-        train_pairs, eval_pairs = train_test_split(
-            train_eval_pairs,
-            test_size=adjusted_eval_size,
-            stratify=None,  # stratify only on first split
-            random_state=random_state
-        )
-        
-        print(f"Data split - Train: {len(train_pairs)}, Eval: {len(eval_pairs)}, Test: {len(test_pairs)}")
-        
-        # Create datasets and dataloaders
+
+        # ------------------------------------------------------------------
+        # 2. Validate and split manually-provided / fallback pairs
+        # ------------------------------------------------------------------
+        if not splits_defined and pairs is not None:
+            if not pairs:
+                raise ValueError("pairs list is empty.")
+
+            # Validate that all tuples have consistent length (3 or 4)
+            tuple_lengths = {len(p) for p in pairs}
+            if len(tuple_lengths) > 1:
+                raise ValueError(
+                    f"All pairs must have the same tuple length, but found mixed lengths: "
+                    f"{tuple_lengths}. Use either all 3-tuples (text_winner, text_loser, margin) "
+                    f"or all 4-tuples (text_winner, text_loser, margin, split)."
+                )
+            tuple_len = next(iter(tuple_lengths))
+            if tuple_len not in (3, 4):
+                raise ValueError(
+                    f"Each pair must be a 3-tuple (text_winner, text_loser, margin) or "
+                    f"4-tuple (text_winner, text_loser, margin, split). "
+                    f"Got tuple of length {tuple_len}."
+                )
+
+            if tuple_len == 4:
+                # Validate split labels
+                valid_splits = {'train', 'eval', 'test'}
+                invalid_labels = {p[3] for p in pairs if p[3] not in valid_splits}
+                if invalid_labels:
+                    raise ValueError(
+                        f"Invalid split label(s) found: {invalid_labels}. "
+                        f"Each tuple's 4th element must be one of 'train', 'eval', 'test'."
+                    )
+
+                # Group by split
+                split_groups: Dict[str, list] = {'train': [], 'eval': [], 'test': []}
+                for t_w, t_l, m, s in pairs:
+                    split_groups[s].append((t_w, t_l, m))
+
+                # Warn about empty splits
+                for split_name, split_data in split_groups.items():
+                    if not split_data:
+                        warnings.warn(
+                            f"Split '{split_name}' is empty after grouping by the provided "
+                            f"split labels. Check that your pairs include '{split_name}' entries.",
+                            UserWarning,
+                            stacklevel=2
+                        )
+
+                train_pairs = split_groups['train']
+                eval_pairs  = split_groups['eval']
+                test_pairs  = split_groups['test']
+                splits_defined = True
+                print(
+                    f"Using provided split labels — "
+                    f"Train: {len(train_pairs)}, Eval: {len(eval_pairs)}, Test: {len(test_pairs)}"
+                )
+
+            else:  # tuple_len == 3
+                # Random pair-level split — warn about potential data leakage
+                warnings.warn(
+                    "No split labels provided in pairs. Applying random pair-level splitting.\n"
+                    "Data leakage risk: the same item can appear in multiple splits "
+                    "(train/eval/test) because splitting is done at the pair level, not the "
+                    "item level. To avoid this, either:\n"
+                    "  • Pass 4-tuples (text_winner, text_loser, margin, split) with explicit "
+                    "split labels, or\n"
+                    "  • Use generate_pairings(make_splits=True) in your Pairadigm instance.",
+                    UserWarning,
+                    stacklevel=2
+                )
+
+                train_eval_pairs, test_pairs = train_test_split(
+                    pairs,
+                    test_size=test_size,
+                    stratify=stratify,
+                    random_state=random_state
+                )
+                adjusted_eval_size = eval_size / (1 - test_size)
+                train_pairs, eval_pairs = train_test_split(
+                    train_eval_pairs,
+                    test_size=adjusted_eval_size,
+                    stratify=None,
+                    random_state=random_state
+                )
+                print(
+                    f"Data split (random, pair-level) — "
+                    f"Train: {len(train_pairs)}, Eval: {len(eval_pairs)}, Test: {len(test_pairs)}"
+                )
+
+        # ------------------------------------------------------------------
+        # 3. Build DataLoaders
+        # ------------------------------------------------------------------
         train_dataset = self._PairwiseDataset(train_pairs, self.tokenizer, self.max_length)
-        eval_dataset = self._PairwiseDataset(eval_pairs, self.tokenizer, self.max_length)
-        test_dataset = self._PairwiseDataset(test_pairs, self.tokenizer, self.max_length)
-        
+        eval_dataset  = self._PairwiseDataset(eval_pairs,  self.tokenizer, self.max_length)
+        test_dataset  = self._PairwiseDataset(test_pairs,  self.tokenizer, self.max_length)
+
         return {
             'train': DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle),
-            'eval': DataLoader(eval_dataset, batch_size=batch_size, shuffle=False),
-            'test': DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+            'eval':  DataLoader(eval_dataset,  batch_size=batch_size, shuffle=False),
+            'test':  DataLoader(test_dataset,  batch_size=batch_size, shuffle=False)
         }
     
     def _prepare_pairadigm(
             self,
-            decision_col: str = "decision", 
+            decision_col: str = "decision",
             score_col: str = "Bradley_Terry_Score",
             margins: bool = True):
         """
         Prepare pairwise data from linked Pairadigm instance.
+
         Args:
             decision_col: Column in pairwise_df indicating winner/loser
             score_col: Column in scored_df with precomputed scores
             margins: Whether to compute margins from scores
+
         Returns:
-            Tuples with pairs and margins
+            When pairwise_df contains 'item1_split'/'item2_split' columns
+            (i.e. generate_pairings was called with make_splits=True), returns a
+            dict {'train': [...], 'eval': [...], 'test': [...]} where each value
+            is a list of (text_winner, text_loser, margin) tuples restricted to
+            within-split pairs only (cross-split diagnostic pairs are excluded to
+            prevent data leakage).
+
+            Otherwise returns a flat list of (text_winner, text_loser, margin)
+            tuples covering all pairs.
         """
         if self.pairadigm is None:
             raise ValueError("No Pairadigm instance linked to RewardModel.")
@@ -200,9 +324,9 @@ class RewardModel:
 
         pairwise_df = self.pairadigm.pairwise_df.copy()
 
-        original_text = self.pairadigm.data[[self.pairadigm.item_id_name, 
+        original_text = self.pairadigm.data[[self.pairadigm.item_id_name,
                                              self.pairadigm.text_name]].copy()
-        
+
         pairwise_df = pd.merge(
             pairwise_df, original_text,
             left_on='item1',
@@ -213,50 +337,71 @@ class RewardModel:
                 right_on=self.pairadigm.item_id_name,
                 how='left'
                 ).rename(columns={self.pairadigm.text_name: 'text2'}).drop(columns=[self.pairadigm.item_id_name])
-        
-        # Calculate margins when desired, if scores are available
-        if margins: 
+
+        # Detect whether generate_pairings was called with make_splits=True
+        has_splits = 'item1_split' in pairwise_df.columns and 'item2_split' in pairwise_df.columns
+
+        # ----------------------------------------------------------------
+        # Build tuples with margins
+        # ----------------------------------------------------------------
+        if margins:
             if not self.pairadigm.scored_df:
                 raise ValueError("No scored_df found in linked Pairadigm instance.")
             if score_col not in self.pairadigm.scored_df.columns:
                 raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
 
+            keep_cols = ['item1', 'item2', 'text1', 'text2', decision_col]
+            if has_splits:
+                keep_cols += ['item1_split', 'item2_split']
+
             pairs = pd.merge(
-                pairwise_df[['item1', 'item2', 
-                             'text1', 'text2', decision_col]],
+                pairwise_df[keep_cols],
                 self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
-                    left_on='item1',
-                    right_on=self.pairadigm.item_id_name,
-                    how='left'
-                ).rename(columns={score_col: 'item_A_score'}).drop(columns=[self.pairadigm.item_id_name]).merge(
-                    self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
-                    left_on='item2',
-                    right_on=self.pairadigm.item_id_name,
-                    how='left'
-                ).rename(columns={score_col: 'item_B_score'}).drop(columns=[self.pairadigm.item_id_name])
-            
+                left_on='item1',
+                right_on=self.pairadigm.item_id_name,
+                how='left'
+            ).rename(columns={score_col: 'item_A_score'}).drop(columns=[self.pairadigm.item_id_name]).merge(
+                self.pairadigm.scored_df[[self.pairadigm.item_id_name, score_col]],
+                left_on='item2',
+                right_on=self.pairadigm.item_id_name,
+                how='left'
+            ).rename(columns={score_col: 'item_B_score'}).drop(columns=[self.pairadigm.item_id_name])
+
             pairs['margin'] = pairs['item_B_score'] - pairs['item_A_score']
 
-            # Make a tuple of breakdown1, breakdown2, margin for each row in prepped_data
-            training_pairs = list(zip(
-                pairs['text1'],
-                pairs['text2'],
-                pairs['margin']
-            ))
+            def _extract_margin_tuples(df):
+                return list(zip(df['text1'], df['text2'], df['margin']))
 
-            return training_pairs
-        
-        # If margins not desired, just return winner/loser pairs
-        training_pairs = []
-        for _, row in self.pairadigm.pairwise_df.iterrows():
-            if row[decision_col] == 1 or row[decision_col] == 'Text1':
-                training_pairs.append((row['text1'], row['text2'], 1.0))
-            elif row[decision_col] == 2 or row[decision_col] == 'Text2':
-                training_pairs.append((row['text2'], row['text1'], 1.0))
-            else:
-                continue  # Skip ties or invalid decisions
+            if has_splits:
+                within = pairs[pairs['item1_split'] == pairs['item2_split']]
+                return {
+                    split: _extract_margin_tuples(within[within['item1_split'] == split])
+                    for split in ('train', 'eval', 'test')
+                }
 
-        return training_pairs
+            return _extract_margin_tuples(pairs)
+
+        # ----------------------------------------------------------------
+        # Build tuples without margins (winner/loser only)
+        # ----------------------------------------------------------------
+        def _make_winner_loser_tuples(df):
+            result = []
+            for _, row in df.iterrows():
+                if row[decision_col] == 1 or row[decision_col] == 'Text1':
+                    result.append((row['text1'], row['text2'], 1.0))
+                elif row[decision_col] == 2 or row[decision_col] == 'Text2':
+                    result.append((row['text2'], row['text1'], 1.0))
+                # Skip ties or invalid decisions
+            return result
+
+        if has_splits:
+            within = pairwise_df[pairwise_df['item1_split'] == pairwise_df['item2_split']]
+            return {
+                split: _make_winner_loser_tuples(within[within['item1_split'] == split])
+                for split in ('train', 'eval', 'test')
+            }
+
+        return _make_winner_loser_tuples(pairwise_df)
     
     class _PairwiseDataset(Dataset):
         """Internal dataset class for pairwise comparisons."""

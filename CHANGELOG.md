@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
+### Added 
+- `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.
+  - `test_size` (default `0.15`) and `eval_size` (default `0.15`) control the proportion of items assigned to each held-out split.
+  - Passing a non-default `test_size` or `eval_size` automatically enables `make_splits=True` with a warning.
+  - `include_mixed_pairs` (default `False`) optionally appends a small number of intentional cross-split pairs, spread evenly across the train×eval, train×test, and eval×test combinations, useful for diagnosing generalisation gaps.
+  - `num_mixed_pairs` (default `10`) controls the total number of cross-split pairs added when `include_mixed_pairs=True`.
+- In accordance with the `generate_pairings()` update, the `RewardModel` class will now respect the data splits generated in `generate_pairings()`. It will also encourage users' data hygiene by asking them to either pass splits with their pairs - if just using the model without a `Pairadigm` - or warning them of the data leakage risk.
+- `test_client_connections()` function in `Pairadigm` to verify API connectivity for all LLMClients.
+- Progress monitoring when generating breakdowns from pre-paired data. 
+
+### Updated
+- The Davidson model in `score_items()` now uses NumPy broadcasting for efficiency and has progress monitoring. 
+- If a user passes prior_breakdown_cols to the initial `Pairadigm` constructor, the constructor will also create the pairwise_df without needing to call `generator_pairings(breakdowns=True)` separately.
+
+### Fixed 
+- Fixed a logic error when creating a `Pairadigm` from paired data where `generate_breakdowns_from_paired()` needed item_id_col to be set but that wasn't enforced. Now if an `item_id_col` isn't set and `paired=True` a default one will be assigned (`item_id_DEFAULT`). 
+
 ## [0.5.1] - 2025-12-14 - A Big Hug! 🤗
 ### Added 
 - Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.

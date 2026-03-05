@@ -14,6 +14,10 @@ alt_test_simulation_results.csv
 paper_files/
 experiments/
 paper.html
+zenodo.17981012.svg
+TODO List.md
+PACKAGING.md
+PACKAGE_SUMMARY.md
 
 test 0-4-1.ipynb
 test install.ipynb

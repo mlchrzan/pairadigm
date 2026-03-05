@@ -1,6 +1,5 @@
 # pairadigm.py
 # Main class for Concept-Guided Chain-of-Thought (CGCoT) pairwise annotation
-# Current version 0.4.1
 
 import pandas as pd
 import itertools
@@ -26,6 +25,7 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import ttest_1samp
 from typing import List, Dict, Any, Callable, Union, Tuple
+from sklearn.model_selection import train_test_split
 
 ##############################
 # LLMClient class
@@ -547,6 +547,8 @@ class Pairadigm:
         self.pairwise_df: Optional[pd.DataFrame] = None
         if paired:
             self.pairwise_df = data.copy()
+            if item_id_name is None: 
+                self.item_id_name = 'item_id_DEFAULT'
         self.scored_df: Optional[pd.DataFrame] = None
         self.validation_results: Optional[Dict] = None
 
@@ -614,6 +616,32 @@ class Pairadigm:
                 'provider': client.provider
             })
         return pd.DataFrame(info)
+
+    def test_clients_connection(self, 
+                                test_prompt: str = "What is the best restaurant in Detroit, MI?") -> Dict[str, bool]:
+        """
+        Test connectivity for all LLM clients in this instance.
+        
+        Returns
+        -------
+        Dict[str, bool]
+            Dictionary with model names as keys and connection status (True/False) as values
+        """
+        results = {}
+        print(f"Testing LLM client connections using the prompt '{test_prompt}'...")
+
+        for client in self.clients:
+            try:
+                response = client.generate(prompt=test_prompt, max_tokens=5)
+                print(f"Test response from {client.model_name}: {response}")
+                if response:
+                    results[client.model_name] = True
+                else:
+                    results[client.model_name] = False
+            except Exception as e:
+                results[client.model_name] = False
+        
+        return results
 
     def _validate_prompts(self, prompts: List[str]) -> bool:
         """
@@ -1050,113 +1078,16 @@ class Pairadigm:
         if len(clients_to_use) == 1:
             return all_results[clients_to_use[0][0]]
         return all_results
-
-    # def generate_breakdowns(
-    #         self,
-    #         max_workers=8, 
-    #         rate_limit_per_minute=None,
-    #         update_dataframe=True,
-    #         max_tokens: int = 1000,
-    #         temperature: float = 0.0,
-    #         client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
-        
-    #     """
-    #     Generate CGCoT breakdowns for all items in the DataFrame.
-        
-    #     Parameters
-    #     ----------
-    #     max_workers : int, default=8
-    #         Number of parallel workers
-    #     rate_limit_per_minute : int, optional
-    #         Rate limit for LLM calls
-    #     update_dataframe : bool, default=True
-    #         If True, adds breakdowns to self.data
-    #     max_tokens : int, default=1000
-    #         Maximum tokens for LLM response
-    #     temperature : float, default=0.0
-    #         Sampling temperature for LLM
-    #     client_indices : int or List[int], optional
-    #         Index/indices of client(s) to use. 
-    #         If None, uses all clients. If int, uses single client. If list, uses multiple clients.
-            
-    #     Returns
-    #     -------
-    #     Dict[Union[str, int], str]
-    #         Mapping of item IDs to breakdowns.
-    #         Also updates self.data with new 'CGCoT_Breakdown' column(s) if update_dataframe is True.
-    #     """
-
-    #     if self.paired:
-    #         raise ValueError("Data is marked as paired. generate_breakdowns() should only be called on unpaired item lists. Use generate_breakdowns_from_paired() instead.")
-
-    #     # Determine which clients to use
-    #     if client_indices is None:
-    #         # Use all clients
-    #         clients_to_use = list(enumerate(self.clients))
-    #     elif isinstance(client_indices, int):
-    #         # Use single client
-    #         if client_indices >= len(self.clients):
-    #             raise ValueError(f"client_indices {client_indices} out of range. Only {len(self.clients)} client(s) available.")
-    #         clients_to_use = [(client_indices, self.clients[client_indices])]
-    #     elif isinstance(client_indices, list):
-    #         # Use specified clients
-    #         clients_to_use = []
-    #         for idx in client_indices:
-    #             if idx >= len(self.clients):
-    #                 raise ValueError(f"client_indices {idx} out of range. Only {len(self.clients)} client(s) available.")
-    #             clients_to_use.append((idx, self.clients[idx]))
-    #     else:
-    #         raise TypeError("client_indices must be None, int, or List[int]")
-
-    #     # Generate breakdowns for each client
-    #     all_results = {}
-    #     for client_idx, client in clients_to_use:
-    #         results = {}
-    #         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #             futures = {
-    #                 executor.submit(
-    #                     self._generate_cgcot_breakdown, 
-    #                     row[self.text_name],
-    #                     client,
-    #                     rate_limit_per_minute,
-    #                     max_tokens,
-    #                     temperature): row[self.item_id_name]
-    #                 for _, row in self.data.iterrows()
-    #             }
-    #             for future in as_completed(futures):
-    #                 uuid = futures[future]
-    #                 try:
-    #                     results[uuid] = future.result()
-    #                 except Exception as e:
-    #                     results[uuid] = f"ERROR: {e}"
-
-    #         if update_dataframe:
-    #             column_name = f'CGCoT_Breakdown_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown'
-    #             self.data[column_name] = self.data[self.item_id_name].map(results)
-            
-    #         all_results[client_idx] = results
-    
-    #     if update_dataframe:
-    #         print(f"Breakdowns added to self.data with column name(s): " +
-    #               ", ".join(
-    #                   [f'CGCoT_Breakdown_{self.model_names[idx]}' if len(self.clients) > 1 else 'CGCoT_Breakdown' 
-    #                    for idx, _ in clients_to_use]
-    #               ))
-    #         return None
-        
-    #     # Return results for single client if only one was used, otherwise return all
-    #     if len(clients_to_use) == 1:
-    #         return all_results[clients_to_use[0][0]]
-    #     return all_results
     
     def generate_breakdowns_from_paired(
-            self, 
-            max_workers: int = 8,
-            rate_limit_per_minute: Optional[int] = None,
-            update_pairwise_df: bool = True,
-            max_tokens: int = 1000,
-            tempature: float = 0.0,
-            client_indices: Optional[Union[int, List[int]]] = None) -> Dict[Union[str, int], str]:
+        self, 
+        max_workers: int = 8,
+        rate_limit_per_minute: Optional[int] = None,
+        update_pairwise_df: bool = True,
+        max_tokens: int = 1000,
+        tempature: float = 0.0,
+        client_indices: Optional[Union[int, List[int]]] = None,
+        show_progress: bool = True) -> Dict[Union[str, int], str]:
         """
         Generate CGCoT breakdowns for all unique items in paired DataFrame.
         Assumes self.data/self.pairwise_df contains paired format with item1_id, item2_id, item1_text, item2_text columns.
@@ -1176,6 +1107,8 @@ class Pairadigm:
         client_indices : int or List[int], optional
             Index/indices of client(s) to use. 
             If None, uses all clients. If int, uses single client. If list, uses multiple clients.
+        show_progress : bool, default=True
+            If True, displays a progress bar during generation
             
         Returns
         -------
@@ -1239,10 +1172,24 @@ class Pairadigm:
         
         # Generate breakdowns for each client
         all_results = {}
+        total_items = len(items_df)
+        sleep_time = 0
+        
+        if rate_limit_per_minute:
+            sleep_time = 60.0 / rate_limit_per_minute
+        
         for client_idx, client in clients_to_use:
+            model_name = self.model_names[client_idx]
+            print(f"\n{'='*70}")
+            print(f"Generating breakdowns for {total_items} unique items using: {model_name}")
+            print(f"{'='*70}")
+            
             results = {}
+            completed = 0
+            failed = 0
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
                 futures = {
                     executor.submit(
                         self._generate_cgcot_breakdown, 
@@ -1254,17 +1201,39 @@ class Pairadigm:
                     for item_id in items_df[self.item_id_name]
                 }
                 
+                # Process completions with progress tracking
                 for future in as_completed(futures):
                     item_id = futures[future]
                     try:
                         results[item_id] = future.result()
+                        completed += 1
                     except Exception as e:
                         results[item_id] = f"ERROR: {e}"
+                        failed += 1
+                    
+                    # Show progress
+                    if show_progress:
+                        progress_pct = ((completed + failed) / total_items) * 100
+                        status_bar = f"[{completed + failed}/{total_items}] {progress_pct:.1f}% complete"
+                        
+                        if failed > 0:
+                            status_bar += f" ({completed} success, {failed} failed)"
+                        
+                        print(f"\r{status_bar}", end='', flush=True)
+            
+            # Final newline after progress bar
+            if show_progress:
+                print()  # Newline after progress
+            
+            # Print summary for this client
+            print(f"Completed: {completed}/{total_items} items")
+            if failed > 0:
+                print(f"Failed: {failed} items")
             
             # Update pairwise_df with breakdown columns if requested
             if update_pairwise_df:
-                breakdown1_col = f'breakdown1_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'breakdown1'
-                breakdown2_col = f'breakdown2_{self.model_names[client_idx]}' if len(self.clients) > 1 else 'breakdown2'
+                breakdown1_col = f'breakdown1_{model_name}' if len(self.clients) > 1 else 'breakdown1'
+                breakdown2_col = f'breakdown2_{model_name}' if len(self.clients) > 1 else 'breakdown2'
                 
                 if self.pairwise_df is not None:
                     self.pairwise_df[breakdown1_col] = self.pairwise_df[item1_id_col].map(results)
@@ -1327,23 +1296,79 @@ class Pairadigm:
         return df
 
     def generate_pairings(
-            self, 
-            num_pairs_per_item=10, 
+            self,
+            num_pairs_per_item=10,
             random_seed=42,
             breakdowns=False,
-            update_classObject=True) -> pd.DataFrame:
-        """ 
+            update_classObject=True,
+            make_splits: bool = False,
+            test_size: float = 0.15,
+            eval_size: float = 0.15,
+            include_mixed_pairs: bool = False,
+            num_mixed_pairs: int = 10) -> pd.DataFrame:
+        """
         Generate pairings for items in a DataFrame column.
+
         Args:
             num_pairs_per_item (int): Minimum pairs per item. Defaults to 10.
             random_seed (int, optional): For reproducibility. Defaults to 42.
-            breakdowns (bool, optional): If True, self.data has CGCOT_Breakdown column from generate_breakdowns(). Defaults to False.
+            breakdowns (bool, optional): If True, self.data has CGCOT_Breakdown column from
+                generate_breakdowns(). Defaults to False.
             update_classObject (bool, optional): If True, updates self.pairwise_df. Defaults to True.
+            make_splits (bool, optional): If True, splits items into train/eval/test groups before
+                generating pairs, ensuring no item appears in more than one split. Adds 'item1_split'
+                and 'item2_split' columns to the resulting DataFrame. Defaults to False.
+                Automatically set to True if non-default test_size or eval_size values are passed.
+            test_size (float, optional): Proportion of items assigned to the test split. Only used
+                when make_splits=True. Defaults to 0.15.
+            eval_size (float, optional): Proportion of items assigned to the eval split. Only used
+                when make_splits=True. Defaults to 0.15.
+            include_mixed_pairs (bool, optional): If True, appends a small number of cross-split pairs
+                (where item1 and item2 come from different splits) to the DataFrame. Useful for
+                diagnosing whether split-level performance differences reflect genuine generalisation
+                gaps. Requires make_splits=True. Defaults to False.
+            num_mixed_pairs (int, optional): Total number of cross-split pairs to add when
+                include_mixed_pairs=True. Spread evenly across the three split-pair combinations
+                (train×eval, train×test, eval×test). Defaults to 10.
+
         Returns:
-            pd.DataFrame: DataFrame with pairings and associated breakdowns.
+            pd.DataFrame: DataFrame with pairings and associated breakdowns. When make_splits=True,
+                also contains 'item1_split' and 'item2_split' columns.
         """
 
-        # Add check for paired data
+        # ------------------------------------------------------------------ #
+        # Parameter co-occurrence validation
+        # ------------------------------------------------------------------ #
+        _DEFAULT_TEST  = 0.15
+        _DEFAULT_EVAL  = 0.15
+
+        # Auto-enable make_splits if the user passed non-default size arguments
+        if not make_splits and (test_size != _DEFAULT_TEST or eval_size != _DEFAULT_EVAL):
+            warnings.warn(
+                "Non-default test_size or eval_size passed without make_splits=True. "
+                "Setting make_splits=True automatically.",
+                UserWarning
+            )
+            make_splits = True
+
+        if include_mixed_pairs and not make_splits:
+            raise ValueError(
+                "include_mixed_pairs=True requires make_splits=True. "
+                "Set make_splits=True or remove include_mixed_pairs."
+            )
+
+        if make_splits:
+            if test_size <= 0 or eval_size <= 0:
+                raise ValueError("test_size and eval_size must both be greater than 0.")
+            if test_size + eval_size >= 1.0:
+                raise ValueError(
+                    f"test_size ({test_size}) + eval_size ({eval_size}) must be less than 1.0 "
+                    "so that a training split remains."
+                )
+
+        # ------------------------------------------------------------------ #
+        # Guard: already-paired data cannot be re-paired
+        # ------------------------------------------------------------------ #
         if self.paired:
             raise ValueError(
                 "Data is already in paired format. Cannot generate pairings from paired data. "
@@ -1351,49 +1376,159 @@ class Pairadigm:
                 "create a new Pairadigm object with paired=False."
             )
 
-        # Pair items
-        uuid_pairings = self.pair_items(
-            self.data[self.item_id_name].tolist(),
-            num_pairs_per_item,
-            random_seed)
-        
-        # Set item_id_cols since data is now paired
-        self.item_id_cols = ['item1', 'item2']
-        
-        # Map breakdowns to pairings if present
-        if breakdowns:
+        # ------------------------------------------------------------------ #
+        # Generate pairings
+        # ------------------------------------------------------------------ #
+        all_items = self.data[self.item_id_name].tolist()
 
-            # Find any CGCoT breakdown columns. These may be named either
-            # 'CGCoT_Breakdown' (single-client) or 'CGCoT_Breakdown_<model_name>'
+        if not make_splits:
+            # Original behaviour — no split columns
+            uuid_pairings = self.pair_items(all_items, num_pairs_per_item, random_seed)
+            # Send user warning about potential data leakage if using these pairs for model training
+            warnings.warn(
+                "No train/eval/test splits have been applied. Pairs are generated from the full item set, "
+                "which may lead to data leakage during model training if items in the same pair appear in both "
+                "training and evaluation sets. Please consider using make_splits=True to generate item-level splits "
+                "and prevent data leakage.",
+                UserWarning
+            )
+
+        else:
+            # ---- Split items (not pairs) into train / eval / test ---- #
+            train_eval_items, test_items = train_test_split(
+                all_items,
+                test_size=test_size,
+                random_state=random_seed
+            )
+            adjusted_eval_size = eval_size / (1.0 - test_size)
+            train_items, eval_items = train_test_split(
+                train_eval_items,
+                test_size=adjusted_eval_size,
+                random_state=random_seed
+            )
+
+            print(
+                f"Item-level splits — "
+                f"train: {len(train_items)}, eval: {len(eval_items)}, test: {len(test_items)}"
+            )
+            warnings.warn(
+                "Item-level splits have been applied (train/eval/test). Pairs are generated "
+                "within each split to prevent data leakage during model training. "
+                "Please inspect your splits to confirm they are representative of your data "
+                "before using them for model training.",
+                UserWarning
+            )
+
+            # Build item → split lookup
+            item_to_split = (
+                {item: 'train' for item in train_items}
+                | {item: 'eval'  for item in eval_items}
+                | {item: 'test'  for item in test_items}
+            )
+
+            # Generate within-split pairs independently
+            split_dfs = []
+            for split_name, split_items in [
+                ('train', train_items),
+                ('eval',  eval_items),
+                ('test',  test_items),
+            ]:
+                if len(split_items) >= 2:
+                    df_split = self.pair_items(split_items, num_pairs_per_item, random_seed)
+                    split_dfs.append(df_split)
+                else:
+                    warnings.warn(
+                        f"Split '{split_name}' has fewer than 2 items; no pairs generated for it.",
+                        UserWarning
+                    )
+
+            uuid_pairings = pd.concat(split_dfs, ignore_index=True)
+
+            # Tag each row with the split of its two items
+            uuid_pairings['item1_split'] = uuid_pairings['item1'].map(item_to_split)
+            uuid_pairings['item2_split'] = uuid_pairings['item2'].map(item_to_split)
+
+            # ---- Optional cross-split (mixed) pairs ------------------- #
+            if include_mixed_pairs:
+                existing_pairs = set(
+                    map(tuple, uuid_pairings[['item1', 'item2']].values)
+                ) | set(
+                    map(tuple, uuid_pairings[['item2', 'item1']].values)
+                )
+
+                rng = random.Random(random_seed)
+                cross_combos = [
+                    ('train', train_items, 'eval',  eval_items),
+                    ('train', train_items, 'test',  test_items),
+                    ('eval',  eval_items,  'test',  test_items),
+                ]
+                # Distribute mixed pairs as evenly as possible across the three combos
+                per_combo = max(1, num_mixed_pairs // len(cross_combos))
+
+                mixed_rows = []
+                for split_a, items_a, split_b, items_b in cross_combos:
+                    candidates = [
+                        (a, b)
+                        for a in items_a
+                        for b in items_b
+                        if (a, b) not in existing_pairs and (b, a) not in existing_pairs
+                    ]
+                    rng.shuffle(candidates)
+                    for a, b in candidates[:per_combo]:
+                        mixed_rows.append({
+                            'item1': a,
+                            'item2': b,
+                            'item1_split': split_a,
+                            'item2_split': split_b,
+                        })
+                        existing_pairs.add((a, b))
+
+                if mixed_rows:
+                    mixed_df = pd.DataFrame(mixed_rows)
+                    uuid_pairings = pd.concat([uuid_pairings, mixed_df], ignore_index=True)
+                    print(f"Added {len(mixed_rows)} cross-split (mixed) pairs.")
+
+        # ------------------------------------------------------------------ #
+        # Set item_id_cols since data is now paired
+        # ------------------------------------------------------------------ #
+        self.item_id_cols = ['item1', 'item2']
+
+        # ------------------------------------------------------------------ #
+        # Map CGCoT breakdowns to pairings if requested
+        # ------------------------------------------------------------------ #
+        if breakdowns:
             breakdown_cols = [c for c in self.data.columns if c.startswith('CGCoT_Breakdown')]
             if len(breakdown_cols) == 0:
-                raise ValueError("No 'CGCoT_Breakdown' columns found in DataFrame. Generate them using generate_breakdowns() first.")
+                raise ValueError(
+                    "No 'CGCoT_Breakdown' columns found in DataFrame. "
+                    "Generate them using generate_breakdowns() first."
+                )
 
-            # Create mapping from UUID to each breakdown column and attach to pairings
             for col in breakdown_cols:
                 uuid_to_desc = dict(zip(self.data[self.item_id_name], self.data[col]))
 
-                # If column is the generic name, create 'breakdown1'/'breakdown2'
                 if col == 'CGCoT_Breakdown':
                     uuid_pairings['breakdown1'] = uuid_pairings['item1'].map(uuid_to_desc)
                     uuid_pairings['breakdown2'] = uuid_pairings['item2'].map(uuid_to_desc)
                 else:
-                    # Column name format is expected to be 'CGCoT_Breakdown_<model_name>'
-                    # Keep the model_name suffix exactly as in the column to preserve downstream naming
                     suffix = col[len('CGCoT_Breakdown_'):]
                     uuid_pairings[f'breakdown1_{suffix}'] = uuid_pairings['item1'].map(uuid_to_desc)
                     uuid_pairings[f'breakdown2_{suffix}'] = uuid_pairings['item2'].map(uuid_to_desc)
 
             if update_classObject:
                 self.pairwise_df = uuid_pairings
-                # self.paired = True
-                print(f"Pairwise DataFrame with breakdowns created and stored in self.pairwise_df")
+                msg = "Pairwise DataFrame with breakdowns created and stored in self.pairwise_df"
+                if make_splits:
+                    msg += " (item-level splits applied; see 'item1_split' / 'item2_split' columns)"
+                print(msg)
         else:
             if update_classObject:
                 self.pairwise_df = uuid_pairings
-                # self.paired = True
-                print(f"Pairwise DataFrame created and stored in self.pairwise_df")
-        
+                msg = "Pairwise DataFrame created and stored in self.pairwise_df"
+                if make_splits:
+                    msg += " (item-level splits applied; see 'item1_split' / 'item2_split' columns)"
+                print(msg)
+
         return uuid_pairings
 
     # Helper function to compare two breakdowns
@@ -3161,8 +3296,6 @@ class Pairadigm:
 
         if use_davidson:
             # Prepare data for Davidson model
-            # Create comparison matrix: wins[i,j] = number of times i beat j
-            # ties[i,j] = number of ties between i and j
             wins = np.zeros((n_items, n_items))
             ties = np.zeros((n_items, n_items))
             
@@ -3177,41 +3310,41 @@ class Pairadigm:
                     wins[j, i] += 1
                 elif decision in ['Tie', 'tie', 2]:
                     ties[i, j] += 1
-                    ties[j, i] += 1  # Symmetric
+                    ties[j, i] += 1
             
-            # Fit Davidson model using MM algorithm
-            # Initialize with uniform scores
+            # Fit Davidson model using vectorized MM algorithm
             scores = np.ones(n_items)
             nu = 1.0  # Tie parameter
             max_iter = 1000
             tol = 1e-6
             
+            # Precompute constants for vectorization
+            W_plus_half_T = wins + 0.5 * ties
+            numerator = W_plus_half_T.sum(axis=1)
+            total_non_ties = wins + wins.T
+            
+            print(f"[{model_label}] Fitting Davidson model (vectorized)...")
             for iteration in range(max_iter):
                 scores_old = scores.copy()
                 
-                # Update scores
-                for i in range(n_items):
-                    numerator = 0
-                    denominator = 0
-                    
-                    for j in range(n_items):
-                        if i != j:
-                            # Wins
-                            numerator += wins[i, j]
-                            denominator += (wins[i, j] + wins[j, i]) / (scores[i] + scores[j])
-                            
-                            # Ties
-                            numerator += 0.5 * ties[i, j]
-                            denominator += ties[i, j] * nu / (scores[i] + scores[j] + 2 * nu)
-                    
-                    if denominator > 0:
-                        scores[i] = numerator / denominator
+                # Vectorized update: S_ij = gamma_i + gamma_j
+                S_matrix = scores[:, np.newaxis] + scores[np.newaxis, :]
+                # Avoid division by zero on diagonal
+                np.fill_diagonal(S_matrix, 1.0)
                 
-                # Normalize to prevent overflow
-                scores = scores / scores.sum() * n_items
+                # MM Update rule
+                term1 = total_non_ties / S_matrix
+                term2 = (ties * nu) / (S_matrix + 2 * nu)
+                denominator = (term1 + term2).sum(axis=1)
                 
-                # Check convergence
-                if np.linalg.norm(scores - scores_old) < tol:
+                scores = numerator / denominator
+                scores = scores / scores.sum() * n_items # Normalize
+                
+                diff = np.linalg.norm(scores - scores_old)
+                if iteration % 100 == 0 and iteration > 0:
+                    print(f"  Iteration {iteration}: convergence delta = {diff:.2e}")
+                
+                if diff < tol:
                     print(f"Davidson model converged in {iteration + 1} iterations")
                     break
             
@@ -3235,6 +3368,7 @@ class Pairadigm:
                 raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
 
             # Fit Bradley-Terry model
+            print(f"[{model_label}] Fitting Bradley-Terry model...")
             bt_scores = choix.ilsr_pairwise(len(item_to_idx), comparisons, alpha=0.1)
             model_name = "Bradley-Terry"
 
@@ -3266,6 +3400,7 @@ class Pairadigm:
 
         model_label = decision_col.replace('decision_', '') if decision_col != 'decision' else 'default'
         print(f"[{model_label}] {model_name} model fitted with {len(valid_df)} comparisons")
+
         if use_davidson:
             num_ties = valid_df[decision_col].isin(tie_values).sum()
             print(f"[{model_label}] Including {num_ties} tie decisions")

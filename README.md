@@ -10,12 +10,23 @@ Pairadigm uses a CGCoT prompting approach to break down complex concepts into an
 
 You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below.
 
-## Updates for version [0.5.1] - 2025-12-14 - A Big Hug! 🤗
+## Updates for Version [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
 ### Added 
-- Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
-- Finetuning now returns the best model based on validation performance rather than the last epoch.
-- RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
-- Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
+- `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.
+  - `test_size` (default `0.15`) and `eval_size` (default `0.15`) control the proportion of items assigned to each held-out split.
+  - Passing a non-default `test_size` or `eval_size` automatically enables `make_splits=True` with a warning.
+  - `include_mixed_pairs` (default `False`) optionally appends a small number of intentional cross-split pairs, spread evenly across the train×eval, train×test, and eval×test combinations, useful for diagnosing generalisation gaps.
+  - `num_mixed_pairs` (default `10`) controls the total number of cross-split pairs added when `include_mixed_pairs=True`.
+- In accordance with the `generate_pairings()` update, the `RewardModel` class will now respect the data splits generated in `generate_pairings()`. It will also encourage users' data hygiene by asking them to either pass splits with their pairs - if just using the model without a `Pairadigm` - or warning them of the data leakage risk.
+- `test_client_connections()` function in `Pairadigm` to verify API connectivity for all LLMClients.
+- Progress monitoring when generating breakdowns from pre-paired data. 
+
+### Updated
+- The Davidson model in `score_items()` now uses NumPy broadcasting for efficiency and has progress monitoring. 
+- If a user passes prior_breakdown_cols to the initial `Pairadigm` constructor, the constructor will also create the pairwise_df without needing to call `generator_pairings(breakdowns=True)` separately.
+
+### Fixed 
+- Fixed a logic error when creating a `Pairadigm` from paired data where `generate_breakdowns_from_paired()` needed item_id_col to be set but that wasn't enforced. Now if an `item_id_col` isn't set and `paired=True` a default one will be assigned (`item_id_DEFAULT`). 
 
 ## Installation
 
@@ -430,6 +441,13 @@ For questions and issues:
 
 # Previous Updates (see CHANGELOG.md for all)
 
+## Updates for version [0.5.1] - 2025-12-14 - A Big Hug! 🤗
+### Added 
+- Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
+- Finetuning now returns the best model based on validation performance rather than the last epoch.
+- RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
+- Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
+
 ## Updates for version 0.4.1 - 2025-12-07
 
 ### Added
@@ -457,34 +475,3 @@ For questions and issues:
 - `check_transitivity` accounts for Tie annotations in its logic of counting violations.
 - `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
 - `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
-
-## Updates for version 0.2.1 🎉
-
-- **Multi-LLM Support**: Annotate with multiple LLM models simultaneously for comparison
-- **Upload Human Annotations**: New `append_human_annotations()` method to add human judgments to existing analyses
-- **Enhanced Validation**: 
-  - Dawid-Skene model implementation for annotator reliability estimation
-  - `dawid_skene_alt_test()` for weighted agreement testing
-  - `dawid_skene_annotator_ranking()` to rank all annotators by reliability
-  - `irr()` method for inter-rater reliability using Cohen's/Fleiss' Kappa or Krippendorff's Alpha
-- **Improved Multi-Model Workflows**: Test all LLMs at once with `test_all_llms=True` parameter
-- **Allowing for Ties**: Option to allow "Tie" as a valid comparison outcome in generating pairwise annotations
-- **Better Error Handling**: Enhanced validation and clearer error messages
-
-**Bug-Fix from version 0.1.0**: Fixed a bug in the `LLMClient` class where certain models did not properly handle the temperature parameter.
-
-## Features
-
-- **Multi-Provider LLM Support**: Works with Google Gemini, OpenAI GPT, and Anthropic Claude models
-- **Multiple LLM Annotations**: Use multiple models simultaneously for comparison and consensus
-- **Flexible Workflows**: Start with unpaired items, pre-paired data, or human-annotated comparisons
-- **CGCoT Breakdowns**: Generate concept-specific analyses using customizable prompt chains
-- **Automated Pairwise Comparison**: Parallel processing of comparisons with rate limiting
-- **Bradley-Terry Scoring**: Convert pairwise preferences into continuous scores
-- **Validation Tools**: 
-  - ALT test for comparing LLM vs. human annotations
-  - Dawid-Skene model for annotator reliability estimation
-  - Inter-rater reliability (Cohen's/Fleiss' Kappa, Krippendorff's Alpha)
-  - Transitivity checking for consistency validation
-- **Interactive Visualizations**: Distribution plots and network graphs using Plotly
-- **Save/Load Functionality**: Persist analysis state for reproducibility
