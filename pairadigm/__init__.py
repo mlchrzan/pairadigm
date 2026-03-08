@@ -5,7 +5,7 @@ A Python library for systematic evaluation of text items along specific conceptu
 through structured pairwise comparisons, powered by LLMs validated by human annotations.
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 __author__ = "Michael Leon Chrzan"
 __license__ = "Apache-2.0"
 

@@ -900,7 +900,9 @@ class Pairadigm:
             client: LLMClient,
             rate_limit_per_minute=None,
             max_tokens: int = 1000,
-            temperature: float = 0.0) -> str:
+            temperature: float = 0.0, 
+            system_message: str = "You are a precise and detail-oriented assistant working to uncover nuance in data (most likely text data). Only provide your answer to the prompt. Do not include any additional commentary, questions, or information."
+            ) -> str:
         """
         Generate concept-specific breakdown for a given text using CGCoT prompts.
         Args:
@@ -929,7 +931,7 @@ class Pairadigm:
                 try:
                     response = client.generate(
                         prompt=full_prompt,
-                        system_message="You are a precise and detail-oriented assistant.",
+                        system_message=system_message,
                         temperature=temperature, 
                         max_tokens=max_tokens
                     )
@@ -952,7 +954,8 @@ class Pairadigm:
         max_tokens: int = 1000,
         temperature: float = 0.0,
         client_indices: Optional[Union[int, List[int]]] = None,
-        show_progress: bool = True) -> Dict[Union[str, int], str]:
+        show_progress: bool = True,
+        system_message: str = "You are a precise and detail-oriented assistant working to uncover nuance in data (most likely text data). Only provide your answer to the prompt. Do not include any additional commentary, questions, or information.") -> Dict[Union[str, int], str]:
     
         """
         Generate CGCoT breakdowns for all items in the DataFrame.
@@ -1027,7 +1030,8 @@ class Pairadigm:
                         client,
                         rate_limit_per_minute,
                         max_tokens,
-                        temperature): row[self.item_id_name]
+                        temperature,
+                        system_message): row[self.item_id_name]
                     for _, row in self.data.iterrows()
                 }
                 
@@ -1085,9 +1089,10 @@ class Pairadigm:
         rate_limit_per_minute: Optional[int] = None,
         update_pairwise_df: bool = True,
         max_tokens: int = 1000,
-        tempature: float = 0.0,
+        temperature: float = 0.0,
         client_indices: Optional[Union[int, List[int]]] = None,
-        show_progress: bool = True) -> Dict[Union[str, int], str]:
+        show_progress: bool = True,
+        system_message: str = "You are a precise and detail-oriented assistant working to uncover nuance in data (most likely text data). Only provide your answer to the prompt. Do not include any additional commentary, questions, or information.") -> Dict[Union[str, int], str]:
         """
         Generate CGCoT breakdowns for all unique items in paired DataFrame.
         Assumes self.data/self.pairwise_df contains paired format with item1_id, item2_id, item1_text, item2_text columns.
@@ -1102,7 +1107,7 @@ class Pairadigm:
             If True, adds breakdown1 and breakdown2 columns to self.pairwise_df
         max_tokens : int, default=1000
             Maximum tokens for LLM response
-        tempature : float, default=0.0
+        temperature : float, default=0.0
             Sampling temperature for LLM
         client_indices : int or List[int], optional
             Index/indices of client(s) to use. 
@@ -1197,7 +1202,8 @@ class Pairadigm:
                         client,
                         rate_limit_per_minute,
                         max_tokens,
-                        tempature): item_id
+                        temperature,
+                        system_message): item_id
                     for item_id in items_df[self.item_id_name]
                 }
                 
@@ -1540,7 +1546,10 @@ class Pairadigm:
         client: LLMClient, 
         max_tokens: int = 1000,
         temperature: float = 0.0,
-        allow_ties: bool = False):
+        allow_ties: bool = False, 
+        comparison_prompt = None, 
+        system_message: str = "You are a precise and detail-oriented assistant working to compare two descriptions based on a specific concept."
+         ) -> Tuple[str, str]:
         """
         Compare two CGCoT breakdowns to decide which expresses greater level of target concept.
         Args:
@@ -1557,7 +1566,7 @@ class Pairadigm:
         """
 
         if not allow_ties:
-            comparison_prompt = f""" 
+            comparison_prompt_default = f""" 
             Description 1: {text1_breakdown}
             Description 2: {text2_breakdown}
             Based on these two Descriptions, which Description expresses greater {target_concept}: Description 1 or Description 2? You must choose one of the descriptions.
@@ -1567,7 +1576,7 @@ class Pairadigm:
             JUSTIFICATION: <Your CONCISE reasoning for the choice>
             """
         else:
-            comparison_prompt = f""" 
+            comparison_prompt_default = f""" 
             Description 1: {text1_breakdown}
             Description 2: {text2_breakdown}
             Based on these two Descriptions, which Description expresses greater {target_concept}: Description 1, Description 2, or are they tied? You must choose one of the descriptions or indicate a tie.
@@ -1577,9 +1586,27 @@ class Pairadigm:
             JUSTIFICATION: <Your CONCISE reasoning for the choice>
             """
 
+        if comparison_prompt is None:
+            comparison_prompt = comparison_prompt_default
+        else:
+            # Ensure the user-provided prompt includes the necessary placeholders and formatting instructions
+            if "{text1_breakdown}" not in comparison_prompt or "{text2_breakdown}" not in comparison_prompt:
+                raise ValueError("Custom comparison_prompt must include '{text1_breakdown}' and '{text2_breakdown}' placeholders so the breakdowns can be inserted.")
+            if "FINAL ANSWER:" not in comparison_prompt:
+                raise ValueError("Custom comparison_prompt must include instructions for formatting the final answer with 'FINAL ANSWER: <your answer>'.")
+            if "Description 1" not in comparison_prompt or "Description 2" not in comparison_prompt:
+                raise ValueError("Custom comparison_prompt must reference both 'Description 1' and 'Description 2' for the model to compare.")
+            if allow_ties and "Tie" not in comparison_prompt:
+                raise ValueError("When allow_ties=True, custom comparison_prompt must include 'Tie' as a possible option in the instructions.")
+            comparison_prompt = comparison_prompt.format(
+                text1_breakdown=text1_breakdown,
+                text2_breakdown=text2_breakdown,
+                target_concept=target_concept,
+            )
+
         response = client.generate(
             prompt=comparison_prompt,
-            system_message="You are a precise and detail-oriented assistant.",
+            system_message=system_message,
             temperature=temperature,
             max_tokens=max_tokens
         )
@@ -1597,16 +1624,37 @@ class Pairadigm:
             elif extracted_answer.lower() == "tie" and allow_ties:
                 final_answer = "Tie"
             else:
-                final_answer = f"ERROR from pairadigm (not model): Regex match found but final answer did not include Text1 or Text2 (or, if allowed, Tie). Model response: {response}"
+                # If regex finds a match but the model does not follow formatting instructions correctly (common problem with open models), fallback to extraction prompt
+                extraction_prompt = f"""
+                    In the following text, which Description is described to be expressing greater {target_concept}: Description 1 or Description 2? ONLY REPLY WITH "Description 1" or "Description 2", no other text or formatting. Text: {response}
+                    """
+                
+                extracted_answer = client.generate(
+                prompt=extraction_prompt,
+                system_message=system_message,
+                temperature=temperature,
+                max_tokens=max_tokens
+                )
+
+                extracted_answer = extracted_answer.strip()
+
+                if extracted_answer == "Description 1":
+                    final_answer = "Text1"
+                elif extracted_answer == "Description 2":
+                    final_answer = "Text2"
+                elif extracted_answer == "Tie" and allow_ties:
+                    final_answer = "Tie"
+                else:
+                    final_answer = f"ERROR from pairadigm (not model): Regex match found but final answer did not include Text1 or Text2 (or, if allowed, Tie). Model response: {response}"
         else:
             # If regex fails, fallback to a direct extraction prompt
             extraction_prompt = f"""
-            In the following text, which Description is described to be expressing greater {target_concept}: Description 1 or Description 2? ONLY REPLY WITH "Description 1" or "Description 2". Text: {response}
+            In the following text, which Description is described to be expressing greater {target_concept}: Description 1 or Description 2? ONLY REPLY WITH "Description 1" or "Description 2", no other text or formatting. Text: {response}
             """
 
             extracted_answer = client.generate(
                 prompt=extraction_prompt,
-                system_message="You are a precise and detail-oriented assistant.",
+                system_message=system_message,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
@@ -1631,7 +1679,10 @@ class Pairadigm:
         max_tokens: int = 1000,
         temperature: float = 0.0,
         allow_ties=False,
-        client_indices: Optional[Union[int, List[int]]] = None) -> pd.DataFrame:
+        client_indices: Optional[Union[int, List[int]]] = None,
+        comparison_prompt = None, 
+        system_message: str = "You are a precise and detail-oriented assistant working to compare two descriptions based on a specific concept."
+        ) -> pd.DataFrame:
         """
         Run pairwise comparisons on all pairs in the pairwise_df DataFrame in parallel.
         
@@ -1690,7 +1741,7 @@ class Pairadigm:
             if breakdown1_col not in result_df.columns or breakdown2_col not in result_df.columns:
                 raise ValueError(f"Breakdown columns '{breakdown1_col}' and '{breakdown2_col}' not found. Generate breakdowns for paired items using generate_breakdowns_from_paired(client_index={client_idx}) first.")
             
-            results = [None] * len(result_df)
+            results = {}
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -1702,8 +1753,9 @@ class Pairadigm:
                         client, 
                         max_tokens,
                         temperature,
-                        allow_ties
-                        
+                        allow_ties,
+                        comparison_prompt,
+                        system_message
                     ): idx
                     for idx, row in result_df.iterrows()
                 }
@@ -1720,9 +1772,10 @@ class Pairadigm:
                         model_name = self.model_names[client_idx] if len(self.clients) > 1 else "default"
                         print(f"[{model_name}] Completed {i + 1}/{len(result_df)} comparisons")
             
-            result_df[decision_col] = [r[0] for r in results]
-            result_df[justification_col] = [r[1] for r in results]
-            self.llm_annotator_cols.append(decision_col)
+            result_df[decision_col] = result_df.index.map(lambda i: results[i][0])
+            result_df[justification_col] = result_df.index.map(lambda i: results[i][1])
+            if decision_col not in self.llm_annotator_cols:
+                self.llm_annotator_cols.append(decision_col)
         
         # Update instance if requested
         if update_classObject:
@@ -3224,8 +3277,122 @@ class Pairadigm:
             
         return scored_df
 
+    @staticmethod
+    def _fit_bt_model(
+            valid_df: pd.DataFrame,
+            item_to_idx: dict,
+            n_items: int,
+            decision_col: str,
+            use_davidson: bool,
+            model_label: str = "") -> Tuple[np.ndarray, str]:
+        """
+        Fit a Bradley-Terry or Davidson model on a (possibly filtered) comparison DataFrame.
+
+        Parameters
+        ----------
+        valid_df : pd.DataFrame
+            Rows already filtered to valid decision values.
+        item_to_idx : dict
+            Mapping from item ID to integer index (0..n_items-1).
+        n_items : int
+            Total number of items (= len(item_to_idx)).
+        decision_col : str
+            Name of the decision column in valid_df.
+        use_davidson : bool
+            If True, fit the Davidson (tie-aware) model; otherwise fit Bradley-Terry.
+        model_label : str
+            Label used in progress messages.
+
+        Returns
+        -------
+        tuple[np.ndarray, str]
+            (raw score array indexed by item_to_idx, model name string)
+        """
+        if use_davidson:
+            wins = np.zeros((n_items, n_items))
+            ties = np.zeros((n_items, n_items))
+
+            for _, row in valid_df.iterrows():
+                i = item_to_idx[row['item1']]
+                j = item_to_idx[row['item2']]
+                decision = row[decision_col]
+
+                if decision in ['Text1', 0]:
+                    wins[i, j] += 1
+                elif decision in ['Text2', 1]:
+                    wins[j, i] += 1
+                elif decision in ['Tie', 'tie', 2]:
+                    ties[i, j] += 1
+                    ties[j, i] += 1
+
+            scores = np.ones(n_items)
+            nu = 1.0
+            max_iter = 1000
+            tol = 1e-6
+
+            W_plus_half_T = wins + 0.5 * ties
+            numerator = W_plus_half_T.sum(axis=1)
+            total_non_ties = wins + wins.T
+
+            print(f"[{model_label}] Fitting Davidson model (vectorized)...")
+            for iteration in range(max_iter):
+                scores_old = scores.copy()
+                S_matrix = scores[:, np.newaxis] + scores[np.newaxis, :]
+                np.fill_diagonal(S_matrix, 1.0)
+                term1 = total_non_ties / S_matrix
+                term2 = (ties * nu) / (S_matrix + 2 * nu)
+                denominator = (term1 + term2).sum(axis=1)
+                scores = numerator / denominator
+                scores = scores / scores.sum() * n_items
+                diff = np.linalg.norm(scores - scores_old)
+                if iteration % 100 == 0 and iteration > 0:
+                    print(f"  Iteration {iteration}: convergence delta = {diff:.2e}")
+                if diff < tol:
+                    print(f"  Davidson model converged in {iteration + 1} iterations")
+                    break
+
+            return scores, "Davidson"
+
+        else:
+            comparisons = []
+            for _, row in valid_df.iterrows():
+                item1_idx = item_to_idx[row['item1']]
+                item2_idx = item_to_idx[row['item2']]
+                decision = row[decision_col]
+
+                if decision in ['Text1', 0]:
+                    comparisons.append((item1_idx, item2_idx))
+                elif decision in ['Text2', 1]:
+                    comparisons.append((item2_idx, item1_idx))
+
+            if not comparisons:
+                raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
+
+            print(f"[{model_label}] Fitting Bradley-Terry model...")
+            scores = choix.ilsr_pairwise(n_items, comparisons, alpha=0.1)
+            return scores, "Bradley-Terry"
+
+    @staticmethod
+    def _normalize_bt_scores(scores: np.ndarray, normalization_scale) -> np.ndarray:
+        """Apply normalization to a raw BT/Davidson score array."""
+        if isinstance(normalization_scale, tuple):
+            if len(normalization_scale) != 2:
+                raise ValueError("normalization_scale tuple must have exactly 2 elements: (min, max)")
+            scale_min, scale_max = normalization_scale
+            if scale_min >= scale_max:
+                raise ValueError("normalization_scale tuple requires min < max")
+            return scale_min + (scores - scores.min()) / (scores.max() - scores.min()) * (scale_max - scale_min)
+        elif normalization_scale == 'zero-to-one':
+            return (scores - scores.min()) / (scores.max() - scores.min())
+        elif normalization_scale == 'negative-one-to-one':
+            return 2 * (scores - scores.min()) / (scores.max() - scores.min()) - 1
+        elif normalization_scale == 'none':
+            return scores
+        else:
+            raise ValueError("normalization_scale must be 'zero-to-one', 'negative-one-to-one', 'none', or a (min, max) tuple")
+
     def score_items(self, 
-                normalization_scale='zero-to-one',
+                normalization_scale: Union[str, Tuple[float, float]] = 'zero-to-one',
                 update_classObject=True,
                 summarize=True,
                 decision_col: str = 'decision',
@@ -3233,9 +3400,23 @@ class Pairadigm:
         """
         Compute Bradley-Terry or Davidson scores from pairwise comparison results.
         Automatically detects ties and uses Davidson model if present, Bradley-Terry otherwise.
-        
+
+        When the pairwise DataFrame contains item-level split columns (``item1_split`` /
+        ``item2_split``, created by ``generate_pairings(make_splits=True)``), two score
+        columns are added to the result:
+
+        * ``<Model>_Score_full``  – scores estimated from **all** valid comparisons.
+        * ``<Model>_Score_split`` – scores estimated from **within-split comparisons only**
+          (pairs where ``item1_split == item2_split``).  Items that only appear in
+          cross-split (mixed) pairs will have ``NaN`` for this column.
+
+        When no split columns are present, only a single ``<Model>_Score`` column is added
+        (original behaviour).
+
         Args:
-            normalization_scale (str): How to normalize scores. Options: 'zero-to-one', 'negative-one-to-one', 'none'
+            normalization_scale (str or Tuple[float, float]): How to normalize scores.
+                String options: 'zero-to-one', 'negative-one-to-one', 'none'.
+                Tuple option: (min, max) to scale scores to an arbitrary range, e.g. (0, 100) or (-5, 5).
             update_classObject (bool, optional): If True, updates self.scored_df. Defaults to True.
             summarize (bool, optional): If True, prints summary statistics. Defaults to True.
             decision_col (str, optional): Name of the decision column to use. Defaults to 'decision'.
@@ -3243,7 +3424,7 @@ class Pairadigm:
             use_davidson (bool, optional): Force use of Davidson model. If None, auto-detects based on ties.
 
         Returns:
-            pd.DataFrame: Original DataFrame with added score column
+            pd.DataFrame: DataFrame with added score column(s).
         """
         if self.pairwise_df is None:
             raise ValueError("No pairwise comparison results found. Run generate_pairwise_annotations() first.")
@@ -3258,29 +3439,37 @@ class Pairadigm:
         # Check for ties in the data
         tie_values = ['Tie', 'tie', 2, 0.5]
         has_ties = self.pairwise_df[decision_col].isin(tie_values).any()
-        
+
         # Determine which model to use
         if use_davidson is None:
             use_davidson = has_ties
             if has_ties:
                 num_ties = self.pairwise_df[decision_col].isin(tie_values).sum()
                 print(f"Detected {num_ties} ties in data. Using Davidson model.")
-        
+
         # Filter valid decisions based on model
         if use_davidson:
             valid_values = ['Text1', 'Text2', 'Tie', 'tie', 0, 1, 2, 0.5]
         else:
             valid_values = ['Text1', 'Text2', 0, 1]
-        
+
         valid_df = self.pairwise_df[self.pairwise_df[decision_col].isin(valid_values)]
 
         if len(valid_df) == 0:
             raise ValueError("No valid comparisons found to compute scores.")
-        
+
         if len(valid_df) < len(self.pairwise_df):
             warnings.warn(f"Some rows filtered out due to invalid decision values. Using {len(valid_df)}/{len(self.pairwise_df)} comparisons.")
 
-        # Prepare item mapping
+        model_label = decision_col.replace('decision_', '') if decision_col != 'decision' else 'default'
+
+        # Detect whether split columns are present
+        has_splits = (
+            'item1_split' in self.pairwise_df.columns
+            and 'item2_split' in self.pairwise_df.columns
+        )
+
+        # Prepare full item mapping
         if self.paired:
             item1_col, item2_col = self.item_id_cols
             all_items = pd.concat([
@@ -3291,145 +3480,129 @@ class Pairadigm:
         else:
             item_to_idx = {item: idx for idx, item in enumerate(self.data[self.item_id_name].tolist())}
 
-        idx_to_item = {idx: item for item, idx in item_to_idx.items()}
         n_items = len(item_to_idx)
 
-        if use_davidson:
-            # Prepare data for Davidson model
-            wins = np.zeros((n_items, n_items))
-            ties = np.zeros((n_items, n_items))
-            
-            for _, row in valid_df.iterrows():
-                i = item_to_idx[row['item1']]
-                j = item_to_idx[row['item2']]
-                decision = row[decision_col]
-                
-                if decision in ['Text1', 0]:
-                    wins[i, j] += 1
-                elif decision in ['Text2', 1]:
-                    wins[j, i] += 1
-                elif decision in ['Tie', 'tie', 2]:
-                    ties[i, j] += 1
-                    ties[j, i] += 1
-            
-            # Fit Davidson model using vectorized MM algorithm
-            scores = np.ones(n_items)
-            nu = 1.0  # Tie parameter
-            max_iter = 1000
-            tol = 1e-6
-            
-            # Precompute constants for vectorization
-            W_plus_half_T = wins + 0.5 * ties
-            numerator = W_plus_half_T.sum(axis=1)
-            total_non_ties = wins + wins.T
-            
-            print(f"[{model_label}] Fitting Davidson model (vectorized)...")
-            for iteration in range(max_iter):
-                scores_old = scores.copy()
-                
-                # Vectorized update: S_ij = gamma_i + gamma_j
-                S_matrix = scores[:, np.newaxis] + scores[np.newaxis, :]
-                # Avoid division by zero on diagonal
-                np.fill_diagonal(S_matrix, 1.0)
-                
-                # MM Update rule
-                term1 = total_non_ties / S_matrix
-                term2 = (ties * nu) / (S_matrix + 2 * nu)
-                denominator = (term1 + term2).sum(axis=1)
-                
-                scores = numerator / denominator
-                scores = scores / scores.sum() * n_items # Normalize
-                
-                diff = np.linalg.norm(scores - scores_old)
-                if iteration % 100 == 0 and iteration > 0:
-                    print(f"  Iteration {iteration}: convergence delta = {diff:.2e}")
-                
-                if diff < tol:
-                    print(f"Davidson model converged in {iteration + 1} iterations")
-                    break
-            
-            bt_scores = scores
-            model_name = "Davidson"
-            
-        else:
-            # Use Bradley-Terry model (original implementation)
-            comparisons = []
-            for _, row in valid_df.iterrows():
-                item1_idx = item_to_idx[row['item1']]
-                item2_idx = item_to_idx[row['item2']]
-                decision = row[decision_col]
-                
-                if decision in ['Text1', 0]:
-                    comparisons.append((item1_idx, item2_idx))
-                elif decision in ['Text2', 1]:
-                    comparisons.append((item2_idx, item1_idx))
+        # ------------------------------------------------------------------ #
+        # Full model — all valid comparisons
+        # ------------------------------------------------------------------ #
+        bt_scores_full, model_name = self._fit_bt_model(
+            valid_df, item_to_idx, n_items, decision_col, use_davidson,
+            f"{model_label} [full]" if has_splits else model_label
+        )
+        bt_scores_full = self._normalize_bt_scores(bt_scores_full, normalization_scale)
 
-            if not comparisons:
-                raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
+        # ------------------------------------------------------------------ #
+        # Split model — within-split comparisons only (when splits exist)
+        # ------------------------------------------------------------------ #
+        bt_scores_split = None
+        split_item_to_idx = None
+        compute_split = False
 
-            # Fit Bradley-Terry model
-            print(f"[{model_label}] Fitting Bradley-Terry model...")
-            bt_scores = choix.ilsr_pairwise(len(item_to_idx), comparisons, alpha=0.1)
-            model_name = "Bradley-Terry"
-
-        # Normalize scores
-        if normalization_scale == 'zero-to-one':
-            bt_scores = (bt_scores - bt_scores.min()) / (bt_scores.max() - bt_scores.min())
-        elif normalization_scale == 'negative-one-to-one':
-            bt_scores = 2 * (bt_scores - bt_scores.min()) / (bt_scores.max() - bt_scores.min()) - 1
-        elif normalization_scale == 'none':
-            pass
-        else:
-            raise ValueError("normalization_scale must be 'zero-to-one', 'negative-one-to-one', or 'none'")
-
-        # Determine score column name
-        score_col_name = f'{model_name.replace("-", "_")}_Score' if decision_col == 'decision' else f'{model_name.replace("-", "_")}_Score_{decision_col.replace("decision_", "")}'
-
-        # Create scored DataFrame
-        if self.paired:
-            scored_df = pd.DataFrame({
-                'item_id': list(item_to_idx.keys()),
-                score_col_name: [bt_scores[item_to_idx[item]] for item in item_to_idx.keys()]
-            })
-        else:
-            if self.scored_df is not None:
-                scored_df = self.scored_df.copy()
+        if has_splits:
+            within_split_df = valid_df[valid_df['item1_split'] == valid_df['item2_split']]
+            if len(within_split_df) == 0:
+                warnings.warn(
+                    "No within-split pairs found among valid comparisons. "
+                    "Split scores will not be computed."
+                )
             else:
-                scored_df = self.data.copy()
-            scored_df[score_col_name] = [bt_scores[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
+                split_items = sorted(
+                    set(within_split_df['item1'].tolist()) | set(within_split_df['item2'].tolist())
+                )
+                split_item_to_idx = {item: idx for idx, item in enumerate(split_items)}
+                n_split_items = len(split_item_to_idx)
 
-        model_label = decision_col.replace('decision_', '') if decision_col != 'decision' else 'default'
-        print(f"[{model_label}] {model_name} model fitted with {len(valid_df)} comparisons")
+                bt_scores_split_raw, _ = self._fit_bt_model(
+                    within_split_df, split_item_to_idx, n_split_items,
+                    decision_col, use_davidson, f"{model_label} [split]"
+                )
+                bt_scores_split = self._normalize_bt_scores(bt_scores_split_raw, normalization_scale)
+                compute_split = True
 
+        # ------------------------------------------------------------------ #
+        # Determine column name(s)
+        # ------------------------------------------------------------------ #
+        model_prefix = model_name.replace("-", "_")
+        decision_suffix = '' if decision_col == 'decision' else f'_{decision_col.replace("decision_", "")}'
+
+        if has_splits:
+            full_col_name  = f'{model_prefix}_Score_full{decision_suffix}'
+            split_col_name = f'{model_prefix}_Score_split{decision_suffix}'
+        else:
+            full_col_name  = f'{model_prefix}_Score{decision_suffix}'
+
+        # ------------------------------------------------------------------ #
+        # Build scored DataFrame
+        # ------------------------------------------------------------------ #
+        if self.paired:
+            scored_df = pd.DataFrame({'item_id': list(item_to_idx.keys())})
+            scored_df[full_col_name] = [bt_scores_full[item_to_idx[item]] for item in scored_df['item_id']]
+            if compute_split:
+                scored_df[split_col_name] = [
+                    bt_scores_split[split_item_to_idx[item]] if item in split_item_to_idx else float('nan')
+                    for item in scored_df['item_id']
+                ]
+        else:
+            scored_df = self.scored_df.copy() if self.scored_df is not None else self.data.copy()
+            scored_df[full_col_name] = [bt_scores_full[item_to_idx[uuid]] for uuid in scored_df[self.item_id_name]]
+            if compute_split:
+                scored_df[split_col_name] = [
+                    bt_scores_split[split_item_to_idx[uuid]] if uuid in split_item_to_idx else float('nan')
+                    for uuid in scored_df[self.item_id_name]
+                ]
+
+        # ------------------------------------------------------------------ #
+        # Print diagnostics
+        # ------------------------------------------------------------------ #
+        tag_full  = f"[{model_label} full]"  if has_splits else f"[{model_label}]"
+        tag_split = f"[{model_label} split]" if has_splits else None
+
+        print(f"{tag_full} {model_name} model fitted with {len(valid_df)} comparisons")
         if use_davidson:
             num_ties = valid_df[decision_col].isin(tie_values).sum()
-            print(f"[{model_label}] Including {num_ties} tie decisions")
-        print(f"[{model_label}] Mean {self.target_concept} score: {scored_df[score_col_name].mean():.3f}")
-        print(f"[{model_label}] Std {self.target_concept} score: {scored_df[score_col_name].std():.3f}")
+            print(f"{tag_full} Including {num_ties} tie decisions")
+        print(f"{tag_full} Mean {self.target_concept} score: {scored_df[full_col_name].mean():.3f}")
+        print(f"{tag_full} Std  {self.target_concept} score: {scored_df[full_col_name].std():.3f}")
+
+        if compute_split:
+            n_within = len(within_split_df)
+            n_missing = scored_df[split_col_name].isna().sum()
+            print(f"{tag_split} {model_name} model fitted with {n_within} within-split comparisons")
+            if use_davidson:
+                num_ties_split = within_split_df[decision_col].isin(tie_values).sum()
+                print(f"{tag_split} Including {num_ties_split} tie decisions")
+            print(f"{tag_split} Mean {self.target_concept} score: {scored_df[split_col_name].mean():.3f}")
+            print(f"{tag_split} Std  {self.target_concept} score: {scored_df[split_col_name].std():.3f}")
+            if n_missing > 0:
+                print(f"{tag_split} {n_missing} item(s) had no within-split comparisons and received NaN.")
 
         if summarize:
             if self.paired:
-                print("\nSummary statistics:")
-                summary = {
-                    'mean': scored_df[score_col_name].mean(),
-                    'median': scored_df[score_col_name].median(),
-                    'std': scored_df[score_col_name].std(),
-                    'min': scored_df[score_col_name].min(),
-                    'max': scored_df[score_col_name].max(),
-                    'count': scored_df[score_col_name].count()
-                }
-                for k, v in summary.items():
-                    print(f"{k}: {v:.3f}")
+                for col_name in ([full_col_name, split_col_name] if compute_split else [full_col_name]):
+                    print(f"\nSummary statistics ({col_name}):")
+                    col_data = scored_df[col_name].dropna()
+                    summary = {
+                        'mean':   col_data.mean(),
+                        'median': col_data.median(),
+                        'std':    col_data.std(),
+                        'min':    col_data.min(),
+                        'max':    col_data.max(),
+                        'count':  col_data.count(),
+                    }
+                    for k, v in summary.items():
+                        print(f"  {k}: {v:.3f}")
             else:
-                summary = self.summarize_scores(df=scored_df, 
-                                                text_col=self.text_name, 
-                                                score_col=score_col_name)
-                for k, v in summary.items():
-                    print(f"{k}: {v:.3f}")
-        
+                for col_name in ([full_col_name, split_col_name] if compute_split else [full_col_name]):
+                    print(f"\nSummary statistics ({col_name}):")
+                    summary = self.summarize_scores(df=scored_df,
+                                                    text_col=self.text_name,
+                                                    score_col=col_name)
+                    for k, v in summary.items():
+                        print(f"  {k}: {v:.3f}")
+
         if update_classObject:
             self.scored_df = scored_df
-            
+
         return scored_df
 
     def summarize_scores(
@@ -4224,7 +4397,7 @@ def build_pairadigm(
                 rate_limit_per_minute=rate_limit_per_minute,
                 update_pairwise_df=True,
                 max_tokens=max_tokens,
-                tempature=temperature,
+                temperature=temperature,
                 client_indices=client_indices
             )
         else:

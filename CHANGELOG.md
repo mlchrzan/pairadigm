@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-03-14 - 10/10 on the Splits
+### Added 
+- Users now have the ability to pass their own system_prompts and comparison_prompts if desired. 
+
+### Updated
+- `score_items()` now also can respect the splits created when generating pairings (or providing split data).
+
+### Fixed 
+- Syntax error where a print statement was misplaced in `score_items()` causing the method to not function.  
+- Typo fixed: tempature → temperature in the signature, docstring, call site inside `generate_breakdowns_from_paired`, and the `build_pairadigm` call.
+- Index mismatch: Changed results from a list to a dict, and replaced `r[0] for r in results`/`[r[1] for r in results]` with `result_df.index.map(...)` so non-zero-based or non-contiguous DataFrame indices are handled safely.
+- Duplicate llm_annotator_cols entries: Added an `if decision_col not in self.llm_annotator_cols` guard before appending.
+
 ## [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
 ### Added 
 - `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.

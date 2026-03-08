@@ -8,25 +8,7 @@
 
 Pairadigm uses a CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic, Ollama, HuggingFace) and includes validation tools for comparing LLM annotations against human judgments. 
 
-You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below.
-
-## Updates for Version [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
-### Added 
-- `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.
-  - `test_size` (default `0.15`) and `eval_size` (default `0.15`) control the proportion of items assigned to each held-out split.
-  - Passing a non-default `test_size` or `eval_size` automatically enables `make_splits=True` with a warning.
-  - `include_mixed_pairs` (default `False`) optionally appends a small number of intentional cross-split pairs, spread evenly across the train×eval, train×test, and eval×test combinations, useful for diagnosing generalisation gaps.
-  - `num_mixed_pairs` (default `10`) controls the total number of cross-split pairs added when `include_mixed_pairs=True`.
-- In accordance with the `generate_pairings()` update, the `RewardModel` class will now respect the data splits generated in `generate_pairings()`. It will also encourage users' data hygiene by asking them to either pass splits with their pairs - if just using the model without a `Pairadigm` - or warning them of the data leakage risk.
-- `test_client_connections()` function in `Pairadigm` to verify API connectivity for all LLMClients.
-- Progress monitoring when generating breakdowns from pre-paired data. 
-
-### Updated
-- The Davidson model in `score_items()` now uses NumPy broadcasting for efficiency and has progress monitoring. 
-- If a user passes prior_breakdown_cols to the initial `Pairadigm` constructor, the constructor will also create the pairwise_df without needing to call `generator_pairings(breakdowns=True)` separately.
-
-### Fixed 
-- Fixed a logic error when creating a `Pairadigm` from paired data where `generate_breakdowns_from_paired()` needed item_id_col to be set but that wasn't enforced. Now if an `item_id_col` isn't set and `paired=True` a default one will be assigned (`item_id_DEFAULT`). 
+You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below. The most recent changes are detailed at the bottom of this page and in the CHANGELOG.md file. 
 
 ## Installation
 
@@ -241,17 +223,6 @@ for annotator, (score, violations, total) in transitivity_results.items():
 # Calculate inter-rater reliability
 irr_results = p.irr(method='auto')
 print(irr_results)
-
-# Dawid-Skene validation (accounts for annotator reliability)
-ds_results = p.dawid_skene_alt_test(
-    alpha=0.05,
-    use_by_correction=True
-)
-print(f"Dawid-Skene Winning Rate: {ds_results['winning_rate']:.2%}")
-
-# Rank all annotators by reliability
-ranking = p.dawid_skene_annotator_ranking(random_seed=42)
-print(ranking[['annotator', 'reliability', 'rank', 'type']])
 ```
 
 ## CGCoT Prompts
@@ -399,12 +370,12 @@ The `data/` directory contains sample datasets to help you get started:
 If you use `pairadigm` in your research, please cite:
 
 ```bibtex
-@software{pairadigm2025,
+@software{pairadigm2026,
   author = {Chrzan, M.L.},
   title = {pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models},
   year = {2026},
   month = {March},
-  version = {0.5.3},
+  version = {0.5.4},
   url = {https://github.com/mlchrzan/pairadigm},
   doi = {10.5281/zenodo.17981011}
 }
@@ -441,37 +412,40 @@ For questions and issues:
 
 # Previous Updates (see CHANGELOG.md for all)
 
+## [0.5.4] - 2026-03-14 - 10/10 on the Splits
+### Added 
+- Users now have the ability to pass their own system_prompts and comparison_prompts if desired. 
+
+### Updated
+- `score_items()` now also can respect the splits created when generating pairings (or providing split data).
+
+### Fixed 
+- Syntax error where a print statement was misplaced in `score_items()` causing the method to not function.  
+- Typo fixed: tempature → temperature in the signature, docstring, call site inside `generate_breakdowns_from_paired`, and the `build_pairadigm` call.
+- Index mismatch: Changed results from a list to a dict, and replaced `r[0] for r in results`/`[r[1] for r in results]` with `result_df.index.map(...)` so non-zero-based or non-contiguous DataFrame indices are handled safely.
+- Duplicate llm_annotator_cols entries: Added an `if decision_col not in self.llm_annotator_cols` guard before appending.
+
+## Updates for Version [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
+### Added 
+- `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.
+  - `test_size` (default `0.15`) and `eval_size` (default `0.15`) control the proportion of items assigned to each held-out split.
+  - Passing a non-default `test_size` or `eval_size` automatically enables `make_splits=True` with a warning.
+  - `include_mixed_pairs` (default `False`) optionally appends a small number of intentional cross-split pairs, spread evenly across the train×eval, train×test, and eval×test combinations, useful for diagnosing generalisation gaps.
+  - `num_mixed_pairs` (default `10`) controls the total number of cross-split pairs added when `include_mixed_pairs=True`.
+- In accordance with the `generate_pairings()` update, the `RewardModel` class will now respect the data splits generated in `generate_pairings()`. It will also encourage users' data hygiene by asking them to either pass splits with their pairs - if just using the model without a `Pairadigm` - or warning them of the data leakage risk.
+- `test_client_connections()` function in `Pairadigm` to verify API connectivity for all LLMClients.
+- Progress monitoring when generating breakdowns from pre-paired data. 
+
+### Updated
+- The Davidson model in `score_items()` now uses NumPy broadcasting for efficiency and has progress monitoring. 
+- If a user passes prior_breakdown_cols to the initial `Pairadigm` constructor, the constructor will also create the pairwise_df without needing to call `generator_pairings(breakdowns=True)` separately.
+
+### Fixed 
+- Fixed a logic error when creating a `Pairadigm` from paired data where `generate_breakdowns_from_paired()` needed item_id_col to be set but that wasn't enforced. Now if an `item_id_col` isn't set and `paired=True` a default one will be assigned (`item_id_DEFAULT`). 
+
 ## Updates for version [0.5.1] - 2025-12-14 - A Big Hug! 🤗
 ### Added 
 - Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
 - Finetuning now returns the best model based on validation performance rather than the last epoch.
 - RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
 - Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
-
-## Updates for version 0.4.1 - 2025-12-07
-
-### Added
-- **RewardModel Class**: Fine-tune ModernBERT (or other BERT-type model) for scalar construct measurement using reward modeling
-  - Train models on pairwise comparison data
-  - Score individual texts or batches on continuous scales
-  - Support for custom dropout, max length, and device settings
-  - Built-in score normalization to desired scales
-  - Save/load trained models for reuse
-- Support for Ollama LLMs (local models) with `think` parameter
-- `build_pairadigm()` function to run full pipeline in one command
-- Enhanced progress monitoring for CGCoT breakdown generation
-
-## Updates for version 0.3.1 - 2025-11-12
-
-### Added
-- Allowing users to adjust the max_tokens and temperature parameters when generating breakdowns and pairwise annotations.
-- Added progress monitoring for breakdown generation (both pre-paired and not)
-- Added "base_url" parameter to LLMClient to support custom API endpoints for LLM providers (currently only OpenAI).
-- Introduced a new "Tie" annotation option to indicate no preference between two items.
-- plot_epsilon_sensitivity() to visualize how varying the epsilon parameter affects Alt-Test Win Rate.
-
-### Fixed
-- `irr` now checks for Tie annotations and handles them correctly when calculating inter-rater reliability.
-- `check_transitivity` accounts for Tie annotations in its logic of counting violations.
-- `score_items` updated to use the Davidson model when Ties are present, instead of Bradley-Terry.
-- `plot_comparison_network` gives a warning if Tie annotations are present, as they cannot be represented in a directed graph.
