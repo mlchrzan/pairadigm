@@ -356,15 +356,6 @@ p.generate_breakdowns(
 - `plot_comparison_network()`: Visualize comparison graph
 - `get_clients_info()`: View information about LLM clients
 
-## Example Datasets
-
-The `data/` directory contains sample datasets to help you get started:
-
-- `emobank.csv`: Full EmoBank dataset with emotional dimension ratings
-- `emobank_sample.csv`: Smaller sample for quick testing
-- `emobank_small_sample_simAnnotations.csv`: Sample with simulated annotations
-- `cgcot_prompts/`: Example prompt files for arousal, dominance, and valence concepts
-
 ## Citation
 
 If you use `pairadigm` in your research, please cite:
