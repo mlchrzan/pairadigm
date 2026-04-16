@@ -1,0 +1,45 @@
+{
+  "version": "1.0",
+  "model_names": [
+    "gpt-5.4-nano",
+    "gpt-5.4-mini"
+  ],
+  "providers": [
+    "openai",
+    "openai"
+  ],
+  "item_id_name": "item_id_DEFAULT",
+  "text_name": null,
+  "item_id_cols": [
+    "item1",
+    "item2"
+  ],
+  "item_text_cols": [
+    "text_1",
+    "text_2"
+  ],
+  "paired": true,
+  "annotated": true,
+  "llm_annotated": true,
+  "annotator_cols": [
+    "annotator_offensiveness_233",
+    "annotator_offensiveness_36",
+    "annotator_offensiveness_9",
+    "annotator_offensiveness_205",
+    "annotator_offensiveness_210",
+    "annotator_offensiveness_14"
+  ],
+  "llm_annotator_cols": [
+    "decision_gpt-5.4-nano",
+    "decision_gpt-5.4-mini"
+  ],
+  "prior_breakdown_cols": null,
+  "target_concept": "offensiveness",
+  "cgcot_prompts": [
+    "Who or what is the primary focus or target of the text? Text: {text}",
+    "If the text primarily focuses on a specific target based on your above answer, does the text express aversion, dislike, distrust, blame, criticism, or negative sentiments towards that target? If the text focuses on neither a specific target nor group, answer 'N/A'. Text: {text}",
+    "We define offensiveness as how likely the text is to be perceived as inappropriate, insulting, or harmful in a general social context. Considering factors such as language, tone, and potential harm to individuals or groups, does the text contain blunt phrasing, disrespectful or derogatory content, severe slurs, threats, dehumanizing language, or hate speech? Text: {text}"
+  ],
+  "save_dir": "example_adv_save_dir",
+  "column_renames": {}
+}

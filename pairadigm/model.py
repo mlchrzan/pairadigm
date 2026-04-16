@@ -9,20 +9,28 @@ This implementation trains a reward model on pairwise comparison data,
 then uses it to score individual text items on a continuous scale.
 """
 
-import pandas as pd
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
-from torch.optim import AdamW
-from typing import List, Tuple, Optional, Union, Dict
-import numpy as np
-from tqdm import tqdm
 import json
-from sklearn.model_selection import train_test_split
-from pairadigm import Pairadigm
-import copy
 import warnings
+from typing import Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+
+try:
+    import torch
+    import torch.nn as nn
+    from torch.optim import AdamW
+    from torch.utils.data import DataLoader, Dataset
+    from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+except ImportError as _e:
+    raise ImportError(
+        "torch and transformers are required for RewardModel. "
+        "Install them with: pip install pairadigm[reward]"
+    ) from _e
+
+from .core import Pairadigm
 
 
 class RewardModel:
@@ -324,19 +332,26 @@ class RewardModel:
 
         pairwise_df = self.pairadigm.pairwise_df.copy()
 
-        original_text = self.pairadigm.data[[self.pairadigm.item_id_name,
-                                             self.pairadigm.text_name]].copy()
-
-        pairwise_df = pd.merge(
-            pairwise_df, original_text,
-            left_on='item1',
-            right_on=self.pairadigm.item_id_name,
-            how='left').rename(columns={self.pairadigm.text_name: 'text1'}).drop(columns=[self.pairadigm.item_id_name]).merge(
-                original_text,
-                left_on='item2',
-                right_on=self.pairadigm.item_id_name,
-                how='left'
-                ).rename(columns={self.pairadigm.text_name: 'text2'}).drop(columns=[self.pairadigm.item_id_name])
+        if self.pairadigm.paired:
+            if self.pairadigm.item_text_cols:
+                col1, col2 = self.pairadigm.item_text_cols
+                pairwise_df = pairwise_df.rename(columns={col1: 'text1', col2: 'text2'})
+            elif 'text1' not in pairwise_df.columns or 'text2' not in pairwise_df.columns:
+                raise ValueError("For paired data, item_text_cols must be configured in the Pairadigm instance to locate text.")
+        else:
+            if 'text1' not in pairwise_df.columns or 'text2' not in pairwise_df.columns:
+                original_text = self.pairadigm.data[[self.pairadigm.item_id_name,
+                                                     self.pairadigm.text_name]].copy()
+                pairwise_df = pd.merge(
+                    pairwise_df, original_text,
+                    left_on='item1',
+                    right_on=self.pairadigm.item_id_name,
+                    how='left').rename(columns={self.pairadigm.text_name: 'text1'}).drop(columns=[self.pairadigm.item_id_name]).merge(
+                        original_text,
+                        left_on='item2',
+                        right_on=self.pairadigm.item_id_name,
+                        how='left'
+                        ).rename(columns={self.pairadigm.text_name: 'text2'}).drop(columns=[self.pairadigm.item_id_name])
 
         # Detect whether generate_pairings was called with make_splits=True
         has_splits = 'item1_split' in pairwise_df.columns and 'item2_split' in pairwise_df.columns
@@ -345,8 +360,9 @@ class RewardModel:
         # Build tuples with margins
         # ----------------------------------------------------------------
         if margins:
-            if not self.pairadigm.scored_df:
-                raise ValueError("No scored_df found in linked Pairadigm instance.")
+            # Fix 7e: use explicit None check (scored_df may be a non-empty DataFrame)
+            if self.pairadigm.scored_df is None:
+                raise ValueError("No scored_df found in linked Pairadigm instance. Run score_items() first.")
             if score_col not in self.pairadigm.scored_df.columns:
                 raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
 
@@ -782,7 +798,8 @@ class RewardModel:
     
     def load(self, path: str):
         """Load model and training state."""
-        checkpoint = torch.load(path, map_location=self.device)
+        # Fix 2b: weights_only=True prevents arbitrary code execution via pickle
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         
         if checkpoint['optimizer_state_dict'] and self.optimizer:

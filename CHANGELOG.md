@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-16 - 'Summer Body'
+### Added
+- **Safer Saving Logic**: Instead of using pickles, `pairadigm` now saves and loads data using individual parquet files, which are more robust and efficient. This also means that `pairadigm` objects are now much smaller and faster to load. It also saves the instance construction parameters in a `metadata.json` file, which is used to reconstruct the object when loading.
+- **LLM API Cost Estimation**: Added `estimate_costs()` method in `Pairadigm` class to estimate token usage and cost using `tiktoken` or a heuristic fallback prior to large API operations.
+- **Client Addition Workflows**: Enhanced `add_client()` logic to allow users to optionally generate breakdowns and pairwise comparisons exclusively for a newly added model.
+- **Dawid-Skene Enhancements**: `dawid_skene_annotator_ranking()` now returns the confusion matrix in addition to ranking metrics. Added warnings for 3-class (tied) classifications.
+- **Reasoning Models**: Introduced support for passing a reasoning level parameter to LLM clients (simplifying the OpenAI wrapper and removing redundant temperature tracking).
+- **Base URLs Persistence**: Base URLs defined for `LLMClient` instances are now persisted within `persistence.py` metadata and seamlessly rehydrated during `load_pairadigm()`.
+
+### Updated
+- **Unified Breakdowns**: Consolidated `generate_breakdowns()` and `generate_breakdowns_from_paired()` into a single `generate_breakdowns()` method.
+- **Module-Level Ordinal Logic**: Decoupled `pair_from_ordinal()` from the `Pairadigm` class into module-level logic. It now processes multi-annotator decision columns robustly.
+- **Robust Extraction Regex**: Enhanced `pairwise_compare()` internal parsing logic to be far more forgiving for weaker or local models that deviate from strict formatting.
+- **Documentation Overhaul**: Complete rewrite of docstrings across all public functions in `core.py`, providing rich parameters, examples, and researcher-friendly contexts.
+- **Column Prefixing**: Standardized `human_` prefixes for manual annotations to eliminate collisions with the LLM `decision_` columns. 
+
+### Fixed
+- **AltTest Filtering Constraints**: Fixed logic in `alt_test()` where valid data entries were being erroneously dropped. 
+- **Dawid-Skene Arguments**: Resolved a duplicate kwargs collision error within `dawid_skene_annotator_ranking()`.
+- **Sparse Ordinal Data Bugs**: Addressed sparse annotation matrix routing issues when handling multi-annotator datasets without globally shared coverage.
+
 ## [0.5.4] - 2026-03-14 - 10/10 on the Splits
 ### Added 
 - Users now have the ability to pass their own system_prompts and comparison_prompts if desired. 

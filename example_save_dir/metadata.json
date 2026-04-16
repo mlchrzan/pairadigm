@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "model_names": [
+    "gemma4:e4b",
+    "ministral-3:8b"
+  ],
+  "providers": [
+    "ollama",
+    "ollama"
+  ],
+  "item_id_name": "comment_id",
+  "text_name": "text",
+  "item_id_cols": [
+    "item1",
+    "item2"
+  ],
+  "item_text_cols": null,
+  "paired": false,
+  "annotated": false,
+  "llm_annotated": true,
+  "annotator_cols": [],
+  "llm_annotator_cols": [
+    "decision_gemma4:e4b",
+    "decision_ministral-3:8b"
+  ],
+  "prior_breakdown_cols": null,
+  "target_concept": "hate speech",
+  "cgcot_prompts": [
+    "Summarize the following text: {text}",
+    "Does the text target a specific group or individual based on demographic characteristics (e.g., race, religion, gender, sexual orientation, disability)? If yes, explicitly AND CONCISELY identify the target. Text: {text}",
+    "Does the text use explicit slurs, profanity, or profoundly insulting language specifically directed at the target? If yes, list the specific words or phrases. Text: {text}",
+    "Does the text compare the target to non-human entities (e.g., animals, pests, diseases, dirt) or imply they are biologically/morally inferior? BRIEFLY and CONCISELY explain how. Text: {text}",
+    "Does the text express a desire for the target to experience violence, discrimination, exclusion, or harm? Text: {text}"
+  ],
+  "save_dir": "example_save_dir",
+  "column_renames": {}
+}

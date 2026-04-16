@@ -1,14 +1,12 @@
 # pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models
 
-`pairadigm` is a Python library designed to streamline the creation of high-quality, continuous measurement scales from text using LLMs. It implements a **Concept-Guided Chain-of-Thought (CGCoT)** methodology to generate reasoned pairwise comparisons using state-of-the-art LLMs (e.g., Google Gemini, OpenAI GPTs, Anthropic Claude, and open source models). It then converts these comparisons into continuous scores using the Bradley-Terry model and provides a pipeline both evaluate LLM score using human annotations and to fine-tune efficient encoder models (e.g., ModernBERT) as reward models for scaling measurement to larger datasets.
+`pairadigm` is a Python library designed to streamline the creation of high-quality, continuous measurement scales from text using LLMs. It implements a **Concept-Guided Chain-of-Thought (CGCoT)** methodology to surface nuance in text and then generate reasoned **pairwise comparisons** using LLMs, including Google Gemini, OpenAI GPTs, Anthropic Claude, and downloadable local models via Ollama and Huggingface. It then can **evaluate and validate** LLM annotations using a small sample of manual annotations and - once validated - can then scale up to generate pairwise comparisons for larger samples of the data. Lastly, it has built in functionality to model the latent construct from these comparisons using a Bradley-Terry model to convert them into **continuous scores** and provides a pipeline to fine-tune encoder-based reward models (e.g., ModernBERT) for scaling measurement to other datasets.
+
+You can see an example of the package in use in the `v1_example.ipynb` and `validation_example.ipynb` notebooks. The most recent changes are detailed at the bottom of this page and in the `CHANGELOG.md` file. 
+
+![pairadigm Workflow](pdm_workflow.png)
 
 [![DOI](https://zenodo.org/badge/1071720356.svg)](https://doi.org/10.5281/zenodo.17981011)
-
-## Overview
-
-Pairadigm uses a CGCoT prompting approach to break down complex concepts into analyzable components, then performs pairwise comparisons to rank items using the Bradley-Terry model. It supports multiple LLM providers (Google Gemini, OpenAI, Anthropic, Ollama, HuggingFace) and includes validation tools for comparing LLM annotations against human judgments. 
-
-You can see a full example of the package in use in the `example.ipynb` on the github repo notebook along with some dummy code below. The most recent changes are detailed at the bottom of this page and in the CHANGELOG.md file. 
 
 ## Installation
 
@@ -18,17 +16,18 @@ You can see a full example of the package in use in the `example.ipynb` on the g
 - API keys for your chosen LLM provider(s)
 
 ### Setup
-In the terminal, follow these steps:
+
+In the **terminal**, follow these steps:
 1. Install the package:
 ```bash
 # For development version
-pip install git+https://github.com/mlchrzan/pairadigm.git
+# pip install git+https://github.com/mlchrzan/pairadigm.git
 
 # For latest stable release 
 pip install pairadigm
 ```
 
-2. Set up environment variables:
+2. Set up environment variables(e.g. API keys):
 ```bash
 # Create a .env file in the project root
 touch .env
@@ -43,11 +42,9 @@ echo "ANTHROPIC_API_KEY=your_anthropic_api_key_here" >> .env
 
 ## Quick Start
 
-Below are the basic workflows for using the package. You can find a full example of this in the jupyter notebook `example.ipynb`.
+Below are the basic workflows for using the package. You can find a full example of this in the jupyter notebook `v1_example.ipynb`.
 
 ### Basic Workflow: Unpaired Items
-
-WARNING: If loading .txt files into CGCOT Prompts, ensure the .txt files do NOT have double spaces as these will be interpreted as an additional prompt.
 
 ```python
 import pandas as pd
@@ -79,13 +76,13 @@ p = Pairadigm(
 p.generate_breakdowns(max_workers=4)
 
 # Create pairings
-p.generate_pairings(num_pairs_per_item=5, breakdowns=True)
+p.generate_pairings(num_pairs_per_item=5, make_splits=True, breakdowns=True)
 
 # Generate pairwise annotations
-p.generate_pairwise_annotations(max_workers=4)
+p.generate_pairwise_annotations()
 
 # Compute Bradley-Terry scores
-scored_df = p.score_items()
+scored_df = p.score_items(normalization_scale=(0,1))
 
 # Visualize results
 p.plot_score_distribution()
@@ -102,6 +99,11 @@ p = Pairadigm(
     text_name='text',
     cgcot_prompts=cgcot_prompts,
     model_name=['gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4'],
+    api_keys=[
+        'your_google_api_key_here',
+        'your_openai_api_key_here',
+        'your_anthropic_api_key_here'
+    ],
     target_concept='objectivity'
 )
 
@@ -109,10 +111,10 @@ p = Pairadigm(
 print(p.get_clients_info())
 
 # Generate breakdowns with all models
-p.generate_breakdowns(max_workers=4)
+p.generate_breakdowns()
 
 # Generate annotations with all models
-p.generate_pairwise_annotations(max_workers=4)
+p.generate_pairwise_annotations()
 
 # Score items for each model
 scored_df_gemini = p.score_items(decision_col='decision_gemini-2.0-flash-exp')
@@ -141,11 +143,11 @@ p = Pairadigm(
 )
 
 # Generate breakdowns for paired items
-p.generate_breakdowns_from_paired(max_workers=4)
+p.generate_breakdowns()
 
 # Continue with annotations and scoring...
 p.generate_pairwise_annotations()
-p.score_items()
+p.score_items(normalization_scale=(0,1))
 ```
 
 ### Adding Human Annotations
@@ -197,10 +199,20 @@ p = Pairadigm(
 )
 
 # Run LLM annotations
-p.generate_breakdowns_from_paired()
+p.generate_breakdowns()
 p.generate_pairwise_annotations()
 
-# Validate using ALT test
+# Examine classic metrics
+transitivity_results = p.check_transitivity()
+for annotator, (score, violations, total) in transitivity_results.items():
+    print(f"{annotator}: {score:.2%} transitivity ({violations}/{total} violations)")
+
+irr_results = p.irr(method='auto')
+print(irr_results)
+
+p.icc()
+
+# Validate using AltTest
 winning_rate, advantage_prob = p.alt_test(
     scoring_function='accuracy',
     epsilon=0.1,
@@ -215,19 +227,13 @@ results = p.alt_test(test_all_llms=True)
 for model_name, (win_rate, adv_prob) in results.items():
     print(f"{model_name}: Win Rate={win_rate:.2%}, Advantage={adv_prob:.2%}")
 
-# Check transitivity
-transitivity_results = p.check_transitivity()
-for annotator, (score, violations, total) in transitivity_results.items():
-    print(f"{annotator}: {score:.2%} transitivity ({violations}/{total} violations)")
-
-# Calculate inter-rater reliability
-irr_results = p.irr(method='auto')
-print(irr_results)
+# Examine annotator construct sensitivity using Dawid-Skene
+p.dawid_skene_annotator_ranking()
 ```
 
 ## CGCoT Prompts
 
-CGCoT prompts are the backbone of Pairadigm's analysis. Design them to progressively analyze your target concept:
+CGCoT prompts are the backbone of Pairadigm's analysis. Design them to progressively analyze your target concept (see the `v1_example.ipynb` for more info).
 
 ### Loading Prompts from File
 
@@ -257,14 +263,22 @@ WARNING: If loading .txt files into CGCOT Prompts, ensure the .txt files do NOT 
 p.save('my_analysis.pkl')
 
 # Load it later
-from pairadigm import load_pairadigm
+from pairadigm.core import load_pairadigm
 p = load_pairadigm('my_analysis.pkl')
 ```
 
-### Fine-Tuning with RewardModel
+### Estimating API Costs
 
 ```python
-from pairadigm import RewardModel
+# Estimate token limits and API costs before running large jobs
+cost_estimates = p.estimate_costs()
+print(cost_estimates)
+```
+
+### Fine-Tuning a Reward Model
+
+```python
+from pairadigm.model import RewardModel
 
 # Prepare training data from pairwise comparisons
 training_pairs = [
@@ -275,7 +289,7 @@ training_pairs = [
 
 # Initialize and train reward model
 reward_model = RewardModel(
-    model_name="answerdotai/ModernBERT-large",
+    model_name="answerdotai/ModernBERT-base",
     dropout=0.1,
     max_length=384
 )
@@ -297,6 +311,16 @@ reward_model.save('my_reward_model.pt')
 reward_model.load('my_reward_model.pt')
 ```
 
+### Rate Limiting
+
+```python
+# Limit API calls to 10 per minute
+p.generate_breakdowns(
+    max_workers=4,
+    rate_limit_per_minute=10
+)
+```
+
 ### Custom Scoring Functions
 
 ```python
@@ -309,68 +333,22 @@ winning_rate, advantage_prob = p.alt_test(
 )
 ```
 
-### Rate Limiting
-
-```python
-# Limit API calls to 10 per minute
-p.generate_breakdowns(
-    max_workers=4,
-    rate_limit_per_minute=10
-)
-```
-
-## API Reference
-
-### Pairadigm Class
-
-**Constructor Parameters:**
-- `data`: Input DataFrame
-- `item_id_name`: Column name for item IDs (unpaired data)
-- `text_name`: Column name for item text (unpaired data)
-- `paired`: Whether data is pre-paired
-- `item_id_cols`: List of 2 ID columns (paired data)
-- `item_text_cols`: List of 2 text columns (paired data)
-- `annotated`: Whether data has human annotations
-- `annotator_cols`: List of human annotation columns
-- `llm_annotator_cols`: List of LLM annotation columns
-- `prior_breakdown_cols`: List of existing breakdown columns
-- `cgcot_prompts`: List of CGCoT prompt templates
-- `model_name`: LLM model identifier(s) - can be string or list of strings
-- `target_concept`: Concept being evaluated
-- `api_key`: API key(s) for LLM service(s) - can be string or list
-- `llm_clients`: Pre-initialized LLMClient(s) - alternative to model_name/api_key
-
-**Key Methods:**
-- `generate_breakdowns()`: Create CGCoT analyses for items
-- `generate_breakdowns_from_paired()`: Create breakdowns for paired data
-- `generate_pairings()`: Create pairwise combinations
-- `generate_pairwise_annotations()`: Run LLM comparisons
-- `append_human_annotations()`: Add human judgments to analysis
-- `score_items()`: Compute Bradley-Terry scores
-- `alt_test()`: Validate against human annotations
-- `dawid_skene_alt_test()`: Validate with annotator reliability weighting
-- `dawid_skene_annotator_ranking()`: Rank annotators by reliability
-- `irr()`: Calculate inter-rater reliability
-- `check_transitivity()`: Check annotation consistency
-- `plot_score_distribution()`: Visualize score distribution
-- `plot_comparison_network()`: Visualize comparison graph
-- `get_clients_info()`: View information about LLM clients
-
 ## Citation
 
-If you use `pairadigm` in your research, please cite:
+If you use this version of `pairadigm` in your research, please cite:
 
 ```bibtex
 @software{pairadigm2026,
   author = {Chrzan, M.L.},
   title = {pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models},
   year = {2026},
-  month = {March},
-  version = {0.5.4},
-  url = {https://github.com/mlchrzan/pairadigm},
-  doi = {10.5281/zenodo.17981011}
+  month = {April},
+  version = {1.0.0},
+  url = {https://github.com/mlchrzan/pairadigm}
 }
 ```
+
+For citing previous versions, see the package's PyPI page and history.
 
 ## License
 
@@ -378,24 +356,20 @@ Apache 2.0 License
 
 ## Contributing
 
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+Contributions are welcome! Please review the [CONTRIBUTING.md](CONTRIBUTING.md) file for more information.
 
 ## Support
 
 For questions and issues:
 - Open an issue on GitHub
 - Check the example notebooks in the repository
-- Review the docstrings in `pairadigm.py`
+- Review the docstrings 
 
-## Upcoming Features
+## Potential Features
 - Performance improvement for multiple models by parallelizing API calls across models, not just within models
 - Enhanced validation metrics and visualizations (IN PROGRESS, recommendations welcome!)
     - Improved inter-rater reliability visualizations
     - Item evaluation metrics and visualizations 
-- Conversion from Likert-scale annotation to pairwise
 - Dawid-Skene item ground truth estimation with and without LLM annotators (NOT STARTED)
 - Updated score_items to use the Dawid-Skene estimated ground truth (NOT STARTED)
 - Update Dawid-Skene methods to generate multiple runs to examine stability (for now, we recommend examining variance independently over multiple seeds)
@@ -403,40 +377,17 @@ For questions and issues:
 
 # Previous Updates (see CHANGELOG.md for all)
 
-## [0.5.4] - 2026-03-14 - 10/10 on the Splits
-### Added 
-- Users now have the ability to pass their own system_prompts and comparison_prompts if desired. 
+## [1.0.0] - 2026-04-16 - 'Summer Body'
+### Added
+- **Safer Saving Logic**: Instead of using pickles, `pairadigm` now saves and loads data using individual parquet files, which are more robust and efficient. This also means that `pairadigm` objects are now much smaller and faster to load. It also saves the instance construction parameters in a `metadata.json` file, which is used to reconstruct the object when loading.
+- **LLM API Cost Estimation**: Added `estimate_costs()` method to calculate token/cost usage via `tiktoken`.
+- **Client Addition Workflows**: Incrementally process new LLM clients added to an existing dataset.
+- **Dawid-Skene Enhancements**: Return confusion matrices alongside ranking metrics; warnings for 3-class ties.
 
 ### Updated
-- `score_items()` now also can respect the splits created when generating pairings (or providing split data).
+- **Unified Breakdowns**: Consolidated breakdown generation into a single robust `generate_breakdowns()` method.
+- **Module-Level Ordinal Logic**: Multi-annotator ordinal evaluations moved to the module level.
+- **Documentation**: Overhauled `core.py` docstrings with full researcher-friendly examples.
 
-### Fixed 
-- Syntax error where a print statement was misplaced in `score_items()` causing the method to not function.  
-- Typo fixed: tempature → temperature in the signature, docstring, call site inside `generate_breakdowns_from_paired`, and the `build_pairadigm` call.
-- Index mismatch: Changed results from a list to a dict, and replaced `r[0] for r in results`/`[r[1] for r in results]` with `result_df.index.map(...)` so non-zero-based or non-contiguous DataFrame indices are handled safely.
-- Duplicate llm_annotator_cols entries: Added an `if decision_col not in self.llm_annotator_cols` guard before appending.
-
-## Updates for Version [0.5.3] - 2026-03-14 - Split Personality 🖖🏽
-### Added 
-- `generate_pairings()` now supports item-level train/eval/test splits via a new `make_splits` parameter, preventing data leakage when pairs are used to train a `RewardModel`. When enabled, splits are generated at the item level (no item appears in more than one split), and resulting pairs are tagged with `item1_split` and `item2_split` columns.
-  - `test_size` (default `0.15`) and `eval_size` (default `0.15`) control the proportion of items assigned to each held-out split.
-  - Passing a non-default `test_size` or `eval_size` automatically enables `make_splits=True` with a warning.
-  - `include_mixed_pairs` (default `False`) optionally appends a small number of intentional cross-split pairs, spread evenly across the train×eval, train×test, and eval×test combinations, useful for diagnosing generalisation gaps.
-  - `num_mixed_pairs` (default `10`) controls the total number of cross-split pairs added when `include_mixed_pairs=True`.
-- In accordance with the `generate_pairings()` update, the `RewardModel` class will now respect the data splits generated in `generate_pairings()`. It will also encourage users' data hygiene by asking them to either pass splits with their pairs - if just using the model without a `Pairadigm` - or warning them of the data leakage risk.
-- `test_client_connections()` function in `Pairadigm` to verify API connectivity for all LLMClients.
-- Progress monitoring when generating breakdowns from pre-paired data. 
-
-### Updated
-- The Davidson model in `score_items()` now uses NumPy broadcasting for efficiency and has progress monitoring. 
-- If a user passes prior_breakdown_cols to the initial `Pairadigm` constructor, the constructor will also create the pairwise_df without needing to call `generator_pairings(breakdowns=True)` separately.
-
-### Fixed 
-- Fixed a logic error when creating a `Pairadigm` from paired data where `generate_breakdowns_from_paired()` needed item_id_col to be set but that wasn't enforced. Now if an `item_id_col` isn't set and `paired=True` a default one will be assigned (`item_id_DEFAULT`). 
-
-## Updates for version [0.5.1] - 2025-12-14 - A Big Hug! 🤗
-### Added 
-- Early stopping functionality to RewardModel's finetuning process based on validation loss to prevent overfitting.
-- Finetuning now returns the best model based on validation performance rather than the last epoch.
-- RewardModel class now includes a `push_to_hub()` method to upload the finetuned model to Hugging Face Model Hub for easy sharing and deployment.
-- Now includes support in LLMClient for calling inference via Hugging Face's Inference API, allowing users to leverage Hugging Face-hosted models seamlessly.
+### Fixed
+- Assorted data constraints, duplicate `kwargs`, and sparse dataset bugs across the AltTest and validation components.

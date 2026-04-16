@@ -13,14 +13,14 @@ tags:
 authors:
   - name: Michael Leon Chrzan
     orcid: 0009-0004-0957-3857 
-    affiliation: Center for Educational Data Science and Innovation, University of Maryland,  College Park MD USA
+    affiliation: Center for Educational Data Science and Innovation, University of Maryland, College Park MD USA
 author: |
   Michael Leon Chrzan \
   Center for Educational Data Science and Innovation \
   University of Maryland \
   College Park MD USA \
   ORCID: 0009-0004-0957-3857
-date: 17 December 2025
+date: 16 April 2026
 bibliography: paper.bib
 geometry: margin=1in
 fontsize: 11pt
@@ -148,7 +148,7 @@ p_valence.check_transitivity()
 p_valence.score_items(normalization_scale='negative-one-to-one')
 ```
 
-The core module utilizes choix [@maystre:2015] for the underlying spectral ranking and Bradley-Terry optimization, while adding layers for error handling, retry logic, and concurrent API execution. This example demonstrates how `pairadigm` abstracts away the complexities of prompt engineering, API management, and psychometric scoring into a streamlined interface. It can further be extended to incorporate paired human annotations for model validation.
+The core module utilizes choix [@maystre:2015] for the underlying spectral ranking and Bradley-Terry optimization, while adding layers for error handling, retry logic, concurrent API execution, and proactive LLM API cost estimation. This example demonstrates how `pairadigm` abstracts away the complexities of prompt engineering, API management, and psychometric scoring into a streamlined interface. It can further be extended to incorporate paired human annotations for model validation. Furthermore, `pairadigm` employs a robust, efficient parquet-based persistence system for saving and loading states, ensuring seamless project resumption without large object overheads.
 
 ### Reward Modeling for Scale
 Once a reliable scale is constructed via the Pairadigm class, the model module allows users to train a dedicated reward model. The RewardModel class leverages the Hugging Face transformers library to fine-tune architectures like ModernBERT [@answerdotai:2024] using a pairwise loss function.
@@ -182,6 +182,7 @@ pairadigm places a heavy emphasis on validation. It includes automated generatio
 * Transitivity Analysis: To measure logical consistency in annotator choices.
 * Inter-Rater Reliability (IRR): Using Cohen's Kappa, Fleiss' Kappa, or Krippendorff's Alpha to assess agreement between LLMs and humans.
 * Alternative Annotator Test (AltTest): To compare LLM-derived scores against human annotations [@calderon:2025].
+* Dawid-Skene Estimation: To automatically identify noisy annotators and calculate annotator reliability, ranking, and confusion matrices. [@dawid:1979]
 * More to come!
 
 # Contributing

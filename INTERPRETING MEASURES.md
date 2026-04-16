@@ -1,8 +1,8 @@
-# Alternative Annotator Test (ALT-TEST) Interpretation Guide
+# Alternative Annotator Test (AltTest) Interpretation Guide
 
 ## Overview
 
-The ALT-TEST (Alternative Annotator Test) is a statistical method that evaluates whether an LLM annotator performs comparably to human annotators on a pairwise comparison task. It answers the question: **"Can the LLM substitute for human annotators?"**
+The AltTest (Alternative Annotator Test) is a statistical method that evaluates whether an LLM annotator performs comparably to human annotators on a pairwise comparison task. It answers the question: **"Can the LLM substitute for human annotators?"**
 
 ## Key Metrics
 
@@ -88,46 +88,47 @@ Tested against 25 human annotators
 - **Objective tasks** (e.g., factual comparison): Higher ω expected
 
 ### 2. Annotation Quality
-- If human annotators are noisy or inconsistent, LLM may achieve artificially high ω
-- Check Inter-Rater Reliability (IRR) among humans first
+- If human annotators are noisy or inconsistent, LLM may achieve artificially high ω, though the authors (Calderon et al) argue that this is unlikely to be possible and that poor annotators make it harder to pass the AltTest, not easier. 
+- Check Inter-Rater Reliability (IRR) among humans first as another set of evidence
 
 ### 3. Number of Annotators
 - More annotators provide more robust estimates
-- Minimum recommended: 10+ human annotators
+- Minimum recommended: 3+ human annotators
 - Fewer annotators may yield unstable results
 
 ### 4. Minimum Overlap Requirements
-- `min_humans_per_instance=2`: Each item must be annotated by at least 2 humans
+- `min_humans_per_instance=2`: Each item must be annotated by at least 2 humans (though 3 is recommended)
 - `min_instances_per_human=30`: Each human must annotate at least 30 items
 - Stricter requirements increase reliability but reduce sample size
 
 ## Comparison with Other Metrics
 
-| Metric | What It Measures | ALT-TEST Advantage |
+| Metric | What It Measures | AltTest Advantage |
 |--------|------------------|-------------------|
 | **Accuracy** | Overall agreement | Ignores annotator variability |
 | **Cohen's Kappa** | Pairwise agreement | Limited to 2 annotators |
+| **Krippendorff's Alpha** | Multi-rater agreement | Accounts for annotator-specific reliability |
 | **Fleiss' Kappa** | Multi-rater agreement | Assumes equal reliability |
-| **ALT-TEST** | LLM vs. human consensus | Accounts for annotator-specific reliability |
+| **AltTest** | LLM vs. human consensus | Accounts for annotator-specific agreement with the crowd |
 
 ## Best Practices
 
-1. **Always report both metrics**: Winning rate AND advantage probability provide complementary information
+1. **Always report both metrics in the AltTest**: Winning rate AND advantage probability provide complementary information
 
 2. **Context matters**: Compare results to baseline human IRR using `.irr()` method
 
 3. **Multiple seeds**: Run analysis with different random seeds to check stability
 
-4. **Inspect failures**: When ω < 0.75, examine specific cases where LLM disagreed with humans
+4. **Inspect failures**: When ω < 0.75, examine specific cases where LLM disagreed with humans to ponder next steps (improving CGCoT prompts, using a new model, etc.)
 
-5. **Task-specific thresholds**: Adjust acceptance criteria based on application:
+5. **Task-specific thresholds**: Adjust acceptance criteria based on application and number of annotators:
    - **High-stakes decisions** (medical, legal): Require ω ≥ 0.90
    - **Content moderation**: ω ≥ 0.75 acceptable
    - **Exploratory research**: ω ≥ 0.60 may suffice
 
 ## Reporting Results
 
-When publishing ALT-TEST results, include:
+When publishing AltTest results, include:
 
 ```python
 results = pairadigm_obj.alt_test(
@@ -138,7 +139,7 @@ results = pairadigm_obj.alt_test(
 )
 
 print(f"""
-ALT-TEST Results for {pairadigm_obj.target_concept}:
+AltTest Results for {pairadigm_obj.target_concept}:
 - Winning Rate: {results[0]:.3f}
 - Advantage Probability: {results[1]:.3f}
 - Model: {pairadigm_obj.model_names[0]}
@@ -181,7 +182,7 @@ Score Range: 0.0 to 1.0
 The reliability score answers: "What proportion of the time does this annotator agree with the estimated true labels?"
 
 For binary classification (Text1 vs Text2):
-- A score of 0.85 means the annotator correctly identifies the consensus label ~85% of the time
+- A score of 0.85 means the annotator correctly identifies the consensus label ~85% of the time. Note that this is **data dependent** (see below)
 - A score of 0.60 indicates moderate reliability with more errors
 - A score of 0.50 suggests the annotator provides no useful signal
 
@@ -196,7 +197,7 @@ Typical Reliability Ranges:
 ## Important Considerations
 1. Relative Comparison: Compare annotators within your dataset. A score of 0.75 might be excellent if all annotators score 0.60-0.80, but concerning if others score 0.85-0.95.
 2. Task Difficulty: Harder tasks naturally produce lower reliability scores across all annotators.
-3. LLM vs Human: When comparing LLM and human annotators, expect some variation. The key question is whether the LLM's reliability is comparable to or exceeds human annotators.
+3. LLM vs Human: When comparing LLM and human annotators, expect some variation. The key question is whether the LLM's reliability is comparable to or exceeds human annotators. While DS doesn't offer a decision rule for this comparison, when used in conjunction with the AltTest, it can help you decide whether to use the LLM as a replacement for human annotators. For example, if the LLM has a lower reliability score than the humans, but the AltTest shows that the LLM is still able to achieve a high winning rate, it may be worth considering using the LLM as a replacement for human annotators.
 4. Statistical Confidence: The Dawid-Skene model estimates these weights from the data. With fewer annotations per annotator, estimates are less stable.
 
 ## Using in Your Workflow
