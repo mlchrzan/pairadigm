@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-04-18
+### Updated
+- **Robust Davidson Scoring**: Replaced the unstable iterative approach for estimating Davidson scores with a mathematically robust optimization method (`scipy.optimize.minimize`). This explicitly estimates both item strengths and the tie propensity parameter ($\tau$) efficiently. 
+- **Reward Model Integrations**: Improved dynamic column fallback in `RewardModel.prepare_data()` to seamlessly support Davidson scores when present.
+
+### Fixed
+- **F-string Syntax Error**: Fixed an invalid string formulation containing literal backslashes inside an f-string evaluated in `pair_from_ordinal()`. 
+
 ## [1.0.0] - 2026-04-16 - 'Summer Body'
 ### Added
 - **Safer Saving Logic**: Instead of using pickles, `pairadigm` now saves and loads data using individual parquet files, which are more robust and efficient. This also means that `pairadigm` objects are now much smaller and faster to load. It also saves the instance construction parameters in a `metadata.json` file, which is used to reconstruct the object when loading.

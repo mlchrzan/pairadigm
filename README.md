@@ -343,7 +343,7 @@ If you use this version of `pairadigm` in your research, please cite:
   title = {pairadigm: A Python Library for Concept-Guided Chain-of-Thought Pairwise Measurement of Scalar Constructs Using Large Language Models},
   year = {2026},
   month = {April},
-  version = {1.0.0},
+  version = {1.0.1},
   url = {https://github.com/mlchrzan/pairadigm}
 }
 ```
@@ -376,6 +376,14 @@ For questions and issues:
 - Support for multiple concepts simultaneously (NOT STARTED)
 
 # Previous Updates (see CHANGELOG.md for all)
+
+## [1.0.1] - 2026-04-18
+### Updated
+- **Robust Davidson Scoring**: Replaced the unstable iterative approach for estimating Davidson scores with a mathematically robust optimization method (`scipy.optimize.minimize`).
+- **Reward Model Integrations**: Improved dynamic column fallback in `RewardModel.prepare_data()` to seamlessly support Davidson scores when present.
+
+### Fixed
+- **F-string Syntax Error**: Fixed an invalid string formulation containing literal backslashes inside an f-string evaluated in `pair_from_ordinal()`. 
 
 ## [1.0.0] - 2026-04-16 - 'Summer Body'
 ### Added

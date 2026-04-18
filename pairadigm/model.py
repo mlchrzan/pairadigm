@@ -363,8 +363,13 @@ class RewardModel:
             # Fix 7e: use explicit None check (scored_df may be a non-empty DataFrame)
             if self.pairadigm.scored_df is None:
                 raise ValueError("No scored_df found in linked Pairadigm instance. Run score_items() first.")
+            
+            # Fallback for Davidson dynamically if they didn't specify score_col but used Davidson scoring
             if score_col not in self.pairadigm.scored_df.columns:
-                raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
+                if score_col == "Bradley_Terry_Score" and "Davidson_Score" in self.pairadigm.scored_df.columns:
+                    score_col = "Davidson_Score"
+                else:
+                    raise ValueError(f"Score column '{score_col}' not found in scored_df. Run score_items() first.")
 
             keep_cols = ['item1', 'item2', 'text1', 'text2', decision_col]
             if has_splits:

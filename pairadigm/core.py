@@ -406,12 +406,12 @@ class Pairadigm:
                 raise ValueError(
                     "For unpaired data, prior_breakdown_cols must contain exactly 1 column name."
                 )
-            if prior_breakdown_cols[0] != "breakdown1":
+            if prior_breakdown_cols[0] != "CGCoT_Breakdown":
                 self.data = self.data.rename(
-                    columns={prior_breakdown_cols[0]: "breakdown1"}
+                    columns={prior_breakdown_cols[0]: "CGCoT_Breakdown"}
                 )
-                self.column_renames[prior_breakdown_cols[0]] = "breakdown1"
-                self.prior_breakdown_cols = ["breakdown1"]
+                self.column_renames[prior_breakdown_cols[0]] = "CGCoT_Breakdown"
+                self.prior_breakdown_cols = ["CGCoT_Breakdown"]
 
     def _init_clients(self, llm_clients, model_name, api_key, base_url):
         if llm_clients is not None:
@@ -1406,10 +1406,11 @@ class Pairadigm:
 
         final = _extract(response)
         if final is None:
+            tie_str = ', or "Tie"' if allow_ties else ''
             ext_prompt = (
                 f"In the following response, what was the FINAL ANSWER they gave? "
                 f"ONLY REPLY WITH \"Description 1\" or \"Description 2\""
-                f"{', or \"Tie\"' if allow_ties else ''}. Response: {response}"
+                f"{tie_str}. Response: {response}"
             )
             ext_resp = client.generate(
                 prompt=ext_prompt, system_message=system_message,

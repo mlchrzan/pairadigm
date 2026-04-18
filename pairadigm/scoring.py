@@ -13,6 +13,11 @@ from typing import Optional, Tuple, Union
 import choix
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
+
+WIN_1_VALUES = ["Text1", 0]
+WIN_2_VALUES = ["Text2", 1]
+TIE_VALUES = ["Tie", "tie", 2, 0.5]
 
 
 # ---------------------------------------------------------------------------
@@ -59,88 +64,162 @@ def get_score_col_name(
 # Internal model fitters
 # ---------------------------------------------------------------------------
 
+def _fit_davidson_model(
+    valid_df: pd.DataFrame,
+    item_to_idx: dict,
+    n_items: int,
+    decision_col: str,
+    model_label: str = "",
+) -> Tuple[np.ndarray, str, list, float]:
+    """
+    Fit a Davidson model on a (possibly filtered) comparison DataFrame.
+
+    Returns
+    -------
+    tuple[np.ndarray, str, list, float]
+        ``(raw_scores, model_name_string, comparisons_list, estimated_tau)``
+        where ``comparisons_list`` is an empty list for Davidson.
+    """
+    # Map items to integer ids for the subset of valid_df
+    i_idx = valid_df["item1"].map(item_to_idx).to_numpy(dtype=np.int64)
+    j_idx = valid_df["item2"].map(item_to_idx).to_numpy(dtype=np.int64)
+
+    # Encode outcomes: 0=Text1, 1=Text2, 2=Tie
+    y = np.where(
+        valid_df[decision_col].isin(WIN_1_VALUES),
+        0,
+        np.where(valid_df[decision_col].isin(WIN_2_VALUES), 1, 2)
+    ).astype(np.int64)
+
+    # Optimization speedup: aggregate duplicate (i, j, outcome) rows
+    packed = np.stack([i_idx, j_idx, y], axis=1)
+    uniq, counts = np.unique(packed, axis=0, return_counts=True)
+    i_u = uniq[:, 0]
+    j_u = uniq[:, 1]
+    y_u = uniq[:, 2]
+    w_u = counts.astype(np.float64)
+
+    n_free = n_items - 1
+    # We estimate tie propensity (tau); add one parameter for log_tau
+    x0 = np.zeros(n_free + 1, dtype=np.float64)
+    x0[-1] = 0.0  # log_tau = 0 -> tau = 1
+
+    eps = 1e-12
+
+    def _unpack(params):
+        scores = np.zeros(n_items, dtype=np.float64)
+        if n_free > 0:
+            scores[1:] = params[:n_free]
+        tau = np.exp(params[-1])
+        return scores, tau
+
+    def objective_and_grad(params):
+        scores, tau = _unpack(params)
+
+        si = scores[i_u]
+        sj = scores[j_u]
+
+        # Davidson probabilities
+        a = np.exp(si)
+        b = np.exp(sj)
+        g = np.exp(0.5 * (si + sj))  # sqrt(a*b)
+        D = a + b + 2.0 * tau * g
+
+        p1 = a / D
+        p2 = b / D
+        pt = (2.0 * tau * g) / D
+
+        p1 = np.clip(p1, eps, 1.0)
+        p2 = np.clip(p2, eps, 1.0)
+        pt = np.clip(pt, eps, 1.0)
+
+        p_obs = np.where(y_u == 0, p1, np.where(y_u == 1, p2, pt))
+        nll = -(w_u * np.log(p_obs)).sum()
+
+        # Analytic gradient
+        grad_scores = np.zeros(n_items, dtype=np.float64)
+
+        # Gradients of log probabilities
+        dlogp1_dsi = 1.0 - (a + tau * g) / D
+        dlogp1_dsj = - (b + tau * g) / D
+
+        dlogp2_dsi = - (a + tau * g) / D
+        dlogp2_dsj = 1.0 - (b + tau * g) / D
+
+        dlogpt_dsi = 0.5 - (a + tau * g) / D
+        dlogpt_dsj = 0.5 - (b + tau * g) / D
+
+        dlogp_dsi = np.where(y_u == 0, dlogp1_dsi, np.where(y_u == 1, dlogp2_dsi, dlogpt_dsi))
+        dlogp_dsj = np.where(y_u == 0, dlogp1_dsj, np.where(y_u == 1, dlogp2_dsj, dlogpt_dsj))
+
+        contrib_i = -w_u * dlogp_dsi
+        contrib_j = -w_u * dlogp_dsj
+        np.add.at(grad_scores, i_u, contrib_i)
+        np.add.at(grad_scores, j_u, contrib_j)
+
+        if n_free > 0:
+            grad_free = grad_scores[1:]
+        else:
+            grad_free = np.array([], dtype=np.float64)
+
+        # Gradient for log_tau
+        dlogp_dlogtau = np.where(y_u == 2, 1.0 - pt, -pt)
+        grad_logtau = -(w_u * dlogp_dlogtau).sum()
+        grad = np.concatenate([grad_free, np.array([grad_logtau])])
+
+        return nll, grad
+
+    print(f"[{model_label}] Fitting Davidson model (L-BFGS-B)...")
+    
+    result = minimize(
+        fun=lambda p: objective_and_grad(p)[0],
+        x0=x0,
+        jac=lambda p: objective_and_grad(p)[1],
+        method="L-BFGS-B",
+        options={"maxiter": 1000},
+    )
+
+    scores_opt, tau_opt = _unpack(result.x)
+    
+    if not result.success:
+        warnings.warn(f"Davidson model optimization didn't cleanly converge: {result.message}")
+
+    return scores_opt, "Davidson", [], tau_opt
+
+
 def _fit_bt_model(
     valid_df: pd.DataFrame,
     item_to_idx: dict,
     n_items: int,
     decision_col: str,
-    use_davidson: bool,
     model_label: str = "",
 ) -> Tuple[np.ndarray, str, list]:
     """
-    Fit a Bradley-Terry or Davidson model on a (possibly filtered) comparison
-    DataFrame.
+    Fit a Bradley-Terry model on a (possibly filtered) comparison DataFrame.
 
     Returns
     -------
     tuple[np.ndarray, str, list]
         ``(raw_scores, model_name_string, comparisons_list)``
         where ``comparisons_list`` is a list of ``(winner_idx, loser_idx)``
-        tuples (BT only; empty list for Davidson).
+        tuples.
     """
-    if use_davidson:
-        wins = np.zeros((n_items, n_items))
-        ties = np.zeros((n_items, n_items))
+    comparisons = []
+    for item1, item2, decision in zip(valid_df["item1"], valid_df["item2"], valid_df[decision_col]):
+        item1_idx = item_to_idx[item1]
+        item2_idx = item_to_idx[item2]
 
-        for _, row in valid_df.iterrows():
-            i = item_to_idx[row["item1"]]
-            j = item_to_idx[row["item2"]]
-            decision = row[decision_col]
+        if decision in WIN_1_VALUES:
+            comparisons.append((item1_idx, item2_idx))
+        elif decision in WIN_2_VALUES:
+            comparisons.append((item2_idx, item1_idx))
 
-            if decision in ["Text1", 0]:
-                wins[i, j] += 1
-            elif decision in ["Text2", 1]:
-                wins[j, i] += 1
-            elif decision in ["Tie", "tie", 2]:
-                ties[i, j] += 1
-                ties[j, i] += 1
+    if not comparisons:
+        raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
 
-        scores = np.ones(n_items)
-        nu = 1.0
-        max_iter = 1000
-        tol = 1e-6
-
-        W_plus_half_T = wins + 0.5 * ties
-        numerator = W_plus_half_T.sum(axis=1)
-        total_non_ties = wins + wins.T
-
-        print(f"[{model_label}] Fitting Davidson model (vectorized)...")
-        for iteration in range(max_iter):
-            scores_old = scores.copy()
-            S_matrix = scores[:, np.newaxis] + scores[np.newaxis, :]
-            np.fill_diagonal(S_matrix, 1.0)
-            term1 = total_non_ties / S_matrix
-            term2 = (ties * nu) / (S_matrix + 2 * nu)
-            denominator = (term1 + term2).sum(axis=1)
-            scores = numerator / denominator
-            scores = scores / scores.sum() * n_items
-            diff = np.linalg.norm(scores - scores_old)
-            if iteration % 100 == 0 and iteration > 0:
-                print(f"  Iteration {iteration}: convergence delta = {diff:.2e}")
-            if diff < tol:
-                print(f"  Davidson model converged in {iteration + 1} iterations")
-                break
-
-        return scores, "Davidson", []  # No SE support for Davidson
-
-    else:
-        comparisons = []
-        for _, row in valid_df.iterrows():
-            item1_idx = item_to_idx[row["item1"]]
-            item2_idx = item_to_idx[row["item2"]]
-            decision = row[decision_col]
-
-            if decision in ["Text1", 0]:
-                comparisons.append((item1_idx, item2_idx))
-            elif decision in ["Text2", 1]:
-                comparisons.append((item2_idx, item1_idx))
-
-        if not comparisons:
-            raise ValueError("No valid comparisons to compute Bradley-Terry scores.")
-
-        print(f"[{model_label}] Fitting Bradley-Terry model...")
-        scores = choix.ilsr_pairwise(n_items, comparisons, alpha=0.1)
-        return scores, "Bradley-Terry", comparisons
+    print(f"[{model_label}] Fitting Bradley-Terry model...")
+    scores = choix.ilsr_pairwise(n_items, comparisons, alpha=0.1)
+    return scores, "Bradley-Terry", comparisons
 
 
 def _compute_bt_se(
@@ -322,21 +401,16 @@ def score_items(
         )
 
     # Auto-detect ties
-    tie_values = ["Tie", "tie", 2, 0.5]
-    has_ties = pairwise_df[decision_col].isin(tie_values).any()
+    has_ties = pairwise_df[decision_col].isin(TIE_VALUES).any()
 
     if use_davidson is None:
         use_davidson = has_ties
         if has_ties:
-            num_ties = pairwise_df[decision_col].isin(tie_values).sum()
+            num_ties = pairwise_df[decision_col].isin(TIE_VALUES).sum()
             print(f"Detected {num_ties} ties in data. Using Davidson model.")
 
     # Filter valid decisions
-    valid_values = (
-        ["Text1", "Text2", "Tie", "tie", 0, 1, 2, 0.5]
-        if use_davidson
-        else ["Text1", "Text2", 0, 1]
-    )
+    valid_values = WIN_1_VALUES + WIN_2_VALUES + (TIE_VALUES if use_davidson else [])
     valid_df = pairwise_df[pairwise_df[decision_col].isin(valid_values)]
 
     if len(valid_df) == 0:
@@ -371,10 +445,18 @@ def score_items(
     n_items = len(item_to_idx)
 
     # --- Full model ---
-    bt_scores_full, model_name, comparisons_full = _fit_bt_model(
-        valid_df, item_to_idx, n_items, decision_col, use_davidson,
-        f"{model_label} [full]" if has_splits else model_label,
-    )
+    if use_davidson:
+        bt_scores_full, model_name, comparisons_full, tau_full = _fit_davidson_model(
+            valid_df, item_to_idx, n_items, decision_col,
+            f"{model_label} [full]" if has_splits else model_label,
+        )
+    else:
+        bt_scores_full, model_name, comparisons_full = _fit_bt_model(
+            valid_df, item_to_idx, n_items, decision_col,
+            f"{model_label} [full]" if has_splits else model_label,
+        )
+        tau_full = None
+    
     raw_full = bt_scores_full.copy()  # keep raw log-strengths for SE
     bt_scores_full = _normalize_bt_scores(bt_scores_full, normalization_scale)
 
@@ -404,10 +486,18 @@ def score_items(
             split_item_to_idx = {item: idx for idx, item in enumerate(split_items)}
             n_split = len(split_item_to_idx)
 
-            raw_split, _, comparisons_split = _fit_bt_model(
-                within_split_df, split_item_to_idx, n_split,
-                decision_col, use_davidson, f"{model_label} [split]",
-            )
+            if use_davidson:
+                raw_split, _, comparisons_split, tau_split = _fit_davidson_model(
+                    within_split_df, split_item_to_idx, n_split,
+                    decision_col, f"{model_label} [split]",
+                )
+            else:
+                raw_split, _, comparisons_split = _fit_bt_model(
+                    within_split_df, split_item_to_idx, n_split,
+                    decision_col, f"{model_label} [split]",
+                )
+                tau_split = None
+                
             bt_scores_split = _normalize_bt_scores(raw_split, normalization_scale)
             compute_split = True
             if comparisons_split:
@@ -469,8 +559,10 @@ def score_items(
     tag_split = f"[{model_label} split]" if has_splits else ""
 
     if use_davidson:
-        n_ties = valid_df[decision_col].isin(tie_values).sum()
+        n_ties = valid_df[decision_col].isin(TIE_VALUES).sum()
         print(f"{tag_full} Including {n_ties} tie decisions")
+        if tau_full is not None:
+            print(f"{tag_full} Estimated tie propensity (tau): {tau_full:.4f}")
     print(f"{tag_full} Mean {target_concept} score: {result[full_col_name].mean():.3f}")
     print(f"{tag_full} Std  {target_concept} score: {result[full_col_name].std():.3f}")
 
@@ -480,8 +572,10 @@ def score_items(
         n_missing = result[split_col_name].isna().sum()
         print(f"{tag_split} {model_name} model fitted with {n_within} within-split comparisons")
         if use_davidson:
-            n_ties_s = within_split_df[decision_col].isin(tie_values).sum()
+            n_ties_s = within_split_df[decision_col].isin(TIE_VALUES).sum()
             print(f"{tag_split} Including {n_ties_s} tie decisions")
+            if tau_split is not None:
+                print(f"{tag_split} Estimated tie propensity (tau): {tau_split:.4f}")
         print(f"{tag_split} Mean {target_concept} score: {result[split_col_name].mean():.3f}")
         print(f"{tag_split} Std  {target_concept} score: {result[split_col_name].std():.3f}")
         if n_missing > 0:

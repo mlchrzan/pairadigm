@@ -6,7 +6,7 @@ conceptual dimensions through structured pairwise comparisons powered by LLMs,
 validated by human annotations.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "Michael Leon Chrzan"
 __license__ = "Apache-2.0"
 
