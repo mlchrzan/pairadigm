@@ -12,7 +12,7 @@ You can see an example of the package in use in the `v1_example.ipynb` and `vali
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - API keys for your chosen LLM provider(s)
 
 ### Setup
@@ -68,7 +68,7 @@ p = Pairadigm(
     item_id_name='id',
     text_name='text',
     cgcot_prompts=cgcot_prompts,
-    model_name='gemini-2.0-flash-exp',
+    model_name='gemini-3.8-flash',
     target_concept='objectivity'
 )
 
@@ -98,12 +98,13 @@ p = Pairadigm(
     item_id_name='id',
     text_name='text',
     cgcot_prompts=cgcot_prompts,
-    model_name=['gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4'],
-    api_keys=[
+    model_name=['gemini-3.8-flash', 'gpt-6-luna', 'claude-sonnet-5-5'],
+    api_key=[
         'your_google_api_key_here',
         'your_openai_api_key_here',
         'your_anthropic_api_key_here'
     ],
+    reasoning=['high', None, 'low'],
     target_concept='objectivity'
 )
 
@@ -117,10 +118,16 @@ p.generate_breakdowns()
 p.generate_pairwise_annotations()
 
 # Score items for each model
-scored_df_gemini = p.score_items(decision_col='decision_gemini-2.0-flash-exp')
-scored_df_gpt = p.score_items(decision_col='decision_gpt-4o')
-scored_df_claude = p.score_items(decision_col='decision_claude-sonnet-4')
+scored_df_gemini = p.score_items(decision_col='decision_gemini-3.8-flash')
+scored_df_gpt = p.score_items(decision_col='decision_gpt-6-luna')
+scored_df_claude = p.score_items(decision_col='decision_claude-sonnet-5-5')
 ```
+
+`reasoning` may be one value shared by every client or a list aligned with
+`model_name`. Use `None` for clients that should retain their model default.
+Named levels are translated to each provider's native setting; Google also
+accepts an integer thinking-token budget, and Anthropic accepts integer budgets
+of at least 1024 tokens.
 
 ### Working with Pre-Paired Data
 

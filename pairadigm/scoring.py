@@ -36,7 +36,7 @@ def get_score_col_name(
     ----------
     decision_col : str
         Name of the decision column (e.g., ``'decision'`` or
-        ``'decision_gemini-2.0-flash-exp'``).
+        ``'decision_gemini-3.8-flash'``).
     split : str or None
         ``'full'`` or ``'split'`` (only relevant when
         ``generate_pairings(make_splits=True)`` was used).  ``None`` returns

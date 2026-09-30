@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +40,7 @@ def _mock_llm_client() -> MagicMock:
     client = MagicMock()
     client.model_name = "mock-model"
     client.provider   = "ollama"
+    client.reasoning  = None
     client.generate   = MagicMock(return_value="FINAL ANSWER: Description 1\nJUSTIFICATION: test")
     return client
 
@@ -95,19 +97,19 @@ class TestLLMClient:
     def test_provider_inference_gemini(self):
         with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
              patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
-            c = pairadigm.LLMClient(model_name="gemini-2.0-flash-exp")
+            c = pairadigm.LLMClient(model_name="gemini-3.8-flash")
         assert c.provider == "google"
 
     def test_provider_inference_gpt(self):
         with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
              patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
-            c = pairadigm.LLMClient(model_name="gpt-4o")
+            c = pairadigm.LLMClient(model_name="gpt-6-luna")
         assert c.provider == "openai"
 
     def test_provider_inference_claude(self):
         with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
              patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
-            c = pairadigm.LLMClient(model_name="claude-sonnet-4")
+            c = pairadigm.LLMClient(model_name="claude-sonnet-5-5")
         assert c.provider == "anthropic"
 
     def test_unknown_model_defaults_to_ollama(self):
@@ -120,6 +122,111 @@ class TestLLMClient:
              patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
             c = pairadigm.LLMClient(model_name="meta-llama/Llama-3.3-70B-Instruct")
         assert c.provider == "huggingface"
+
+    @pytest.mark.parametrize("model_name", ["o3", "o4-mini", "gpt-6-astra"])
+    def test_current_openai_models_are_inferred(self, model_name):
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
+             patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
+            client = pairadigm.LLMClient(model_name=model_name)
+        assert client.provider == "openai"
+
+    @pytest.mark.parametrize(
+        ("provider", "expected"),
+        [
+            ("openai", {"reasoning_effort": "high"}),
+            ("google", {"thinking_config": {"thinking_level": "HIGH"}}),
+            (
+                "anthropic",
+                {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": "high"},
+                },
+            ),
+            ("ollama", {"think": "high"}),
+            ("huggingface", {"extra_body": {"reasoning_effort": "high"}}),
+        ],
+    )
+    def test_reasoning_level_maps_to_provider_parameter(self, provider, expected):
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()):
+            client = pairadigm.LLMClient(
+                api_key="key",
+                model_name="test-model",
+                provider=provider,
+                reasoning="high",
+            )
+        assert client._reasoning_params(max_tokens=16000) == expected
+
+    def test_reasoning_none_emits_no_provider_parameter(self):
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()):
+            client = pairadigm.LLMClient(
+                api_key="key",
+                model_name="gpt-4o",
+                provider="openai",
+                reasoning=None,
+            )
+        assert client._reasoning_params(max_tokens=1000) == {}
+
+    def test_google_named_reasoning_requires_compatible_sdk(self):
+        from google.genai import types
+
+        client = pairadigm.LLMClient.__new__(pairadigm.LLMClient)
+        client.model_name = "gemini-3-pro-preview"
+        client.provider = "google"
+        client.reasoning = "high"
+        client.client = MagicMock()
+
+        old_thinking_config = SimpleNamespace(model_fields={})
+        with patch.object(types, "ThinkingConfig", old_thinking_config):
+            with pytest.raises(RuntimeError, match="google-genai>=1.51.0"):
+                client._generate_google("prompt", "system", None, 16000)
+
+    def test_google_reasoning_budget_works_with_older_sdk(self):
+        client = pairadigm.LLMClient.__new__(pairadigm.LLMClient)
+        client.model_name = "gemini-2.5-pro"
+        client.provider = "google"
+        client.reasoning = 4096
+        client.client = MagicMock()
+        client.client.models.generate_content.return_value = SimpleNamespace(text="answer")
+
+        result = client._generate_google("prompt", "system", None, 16000)
+
+        assert result == "answer"
+        config = client.client.models.generate_content.call_args.kwargs["config"]
+        assert config.thinking_config.thinking_budget == 4096
+
+    def test_anthropic_reasoning_response_returns_text_block(self):
+        client = pairadigm.LLMClient.__new__(pairadigm.LLMClient)
+        client.model_name = "claude-sonnet-5-5"
+        client.provider = "anthropic"
+        client.reasoning = "high"
+        client.client = MagicMock()
+        client.client.messages.create.return_value = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="summary"),
+                SimpleNamespace(type="text", text="final answer"),
+            ]
+        )
+
+        result = client._generate_anthropic(
+            "prompt", "system", None, 16000
+        )
+
+        assert result == "final answer"
+
+    def test_pairadigm_accepts_mixed_reasoning_settings(self):
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
+             patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
+            obj = pairadigm.Pairadigm(
+                data=_make_item_df(),
+                item_id_name="id",
+                text_name="text",
+                cgcot_prompts=None,
+                target_concept="clarity",
+                model_name=["gpt-6-luna", "gpt-4o"],
+                reasoning=["low", None],
+            )
+
+        assert [client.reasoning for client in obj.clients] == ["low", None]
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +457,7 @@ class TestSaveLoad:
 
     def test_metadata_json_has_version(self):
         obj = self._make_obj_with_data()
+        obj.clients[0].reasoning = "high"
         with tempfile.TemporaryDirectory() as tmpdir:
             obj.save(tmpdir)
             meta = json.loads(
@@ -357,6 +465,7 @@ class TestSaveLoad:
             )
         assert meta["version"] == "1.0"
         assert meta["target_concept"] == "clarity"
+        assert meta["reasoning"] == ["high"]
 
     def test_load_round_trip_preserves_data(self):
         obj = self._make_obj_with_data()
