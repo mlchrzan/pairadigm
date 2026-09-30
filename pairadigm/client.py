@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 class LLMClient:
     """
@@ -10,23 +10,32 @@ class LLMClient:
     api_key : str, optional
         API key for the LLM service. If None, reads from environment
     model_name : str
-        Model identifier (e.g., 'gemini-2.0-flash-exp', 'gpt-4o', 'claude-sonnet-4', 'llama3.2', 'meta-llama/Llama-3.3-70B-Instruct')
+        Model identifier (e.g., 'gemini-3.8-flash', 'gpt-6-luna',
+        'claude-sonnet-5-5', 'llama3.2', 'meta-llama/Llama-3.3-70B-Instruct')
     base_url : str, optional
         Base URL for the LLM service API (default: 'http://localhost:11434' for Ollama)
     provider : str, optional
         Force specific provider ('google', 'openai', 'anthropic', 'ollama', 'huggingface'). 
         If None, infers from model_name
+    reasoning : str, bool, int, or dict, optional
+        Per-client reasoning control. Named levels are translated to the
+        provider's parameter (for example, ``reasoning_effort`` for OpenAI,
+        ``thinking_level`` for Google, and ``effort`` for Anthropic). ``None``
+        leaves the provider/model default unchanged. Dictionaries may contain
+        provider-native reasoning parameters.
     """
     
     def __init__(
             self,
             api_key: Optional[str] = None,
-            model_name: str = 'gemini-2.0-flash-exp',
+            model_name: str = 'gemini-3.8-flash',
             base_url: Optional[str] = None,
-            provider: Optional[str] = None):
+            provider: Optional[str] = None,
+            reasoning: Optional[Any] = None):
 
         self.model_name = model_name
         self.provider = provider or self._infer_provider(model_name)
+        self.reasoning = reasoning
         self.base_url = base_url or self._get_default_base_url()
         self.api_key = api_key or self._get_api_key()
         self.client = self._initialize_client()
@@ -52,8 +61,13 @@ class LLMClient:
         # Then check for cloud providers
         if 'gemini' in model_lower:
             return 'google'
-        elif model_lower.startswith('gpt-') and 'gpt-oss' not in model_lower:
-            # Be more specific - only official OpenAI models start with 'gpt-'
+        elif (
+            model_lower.startswith('gpt-') and 'gpt-oss' not in model_lower
+        ) or (
+            model_lower.startswith('o')
+            and len(model_lower) > 1
+            and model_lower[1].isdigit()
+        ):
             return 'openai'
         elif 'claude' in model_lower:
             return 'anthropic'
@@ -74,23 +88,108 @@ class LLMClient:
             return None
             
         env_vars = {
-            'google': 'GENAI_API_KEY',
-            'openai': 'OPENAI_API_KEY',
-            'anthropic': 'ANTHROPIC_API_KEY',
-            'huggingface': 'HUGGINGFACE_API_KEY'
+            'google': ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GENAI_API_KEY'),
+            'openai': ('OPENAI_API_KEY',),
+            'anthropic': ('ANTHROPIC_API_KEY',),
+            'huggingface': ('HUGGINGFACE_API_KEY', 'HF_TOKEN')
         }
         
-        env_var = env_vars.get(self.provider)
-        if not env_var:
+        provider_env_vars = env_vars.get(self.provider)
+        if not provider_env_vars:
             raise ValueError(f"Unknown provider: {self.provider}")
         
-        api_key = os.getenv(env_var)
-        if not api_key:
-            raise ValueError(
-                f"API key not found. Set {env_var} environment variable."
-            )
-        
-        return api_key
+        for env_var in provider_env_vars:
+            api_key = os.getenv(env_var)
+            if api_key:
+                return api_key
+
+        env_var_names = " or ".join(provider_env_vars)
+        raise ValueError(
+            f"API key not found. Set {env_var_names} environment variable."
+        )
+
+    def _reasoning_params(self, max_tokens: Optional[int] = None) -> Dict[str, Any]:
+        """Translate the client's reasoning setting to provider request fields."""
+        reasoning = self.reasoning
+        if reasoning is None:
+            return {}
+
+        if isinstance(reasoning, dict):
+            if self.provider == 'google':
+                if 'thinking_config' in reasoning:
+                    return dict(reasoning)
+                return {'thinking_config': dict(reasoning)}
+            if self.provider == 'anthropic':
+                if 'thinking' in reasoning or 'output_config' in reasoning:
+                    return dict(reasoning)
+                return {'thinking': dict(reasoning)}
+            if self.provider == 'ollama':
+                if set(reasoning) != {'think'}:
+                    raise ValueError(
+                        "Ollama reasoning dictionaries must contain only the 'think' key."
+                    )
+                if not isinstance(reasoning['think'], (str, bool)):
+                    raise TypeError("Ollama 'think' must be a named level or bool.")
+                return dict(reasoning)
+            if self.provider == 'huggingface':
+                if 'extra_body' in reasoning:
+                    return dict(reasoning)
+                return {'extra_body': dict(reasoning)}
+            return dict(reasoning)
+
+        if self.provider == 'openai':
+            if isinstance(reasoning, bool):
+                reasoning = 'medium' if reasoning else 'none'
+            if not isinstance(reasoning, str):
+                raise TypeError(
+                    "OpenAI reasoning must be a named level, bool, dict, or None."
+                )
+            return {'reasoning_effort': reasoning}
+
+        if self.provider == 'huggingface':
+            if isinstance(reasoning, bool):
+                reasoning = 'medium' if reasoning else 'none'
+            if not isinstance(reasoning, str):
+                raise TypeError(
+                    "Hugging Face reasoning must be a named level, bool, dict, or None."
+                )
+            return {'extra_body': {'reasoning_effort': reasoning}}
+
+        if self.provider == 'google':
+            if isinstance(reasoning, bool):
+                return {'thinking_config': {'thinking_budget': -1 if reasoning else 0}}
+            if isinstance(reasoning, int):
+                return {'thinking_config': {'thinking_budget': reasoning}}
+            if isinstance(reasoning, str):
+                return {'thinking_config': {'thinking_level': reasoning.upper()}}
+            raise TypeError("Google reasoning must be a named level, bool, int, dict, or None.")
+
+        if self.provider == 'anthropic':
+            if isinstance(reasoning, bool):
+                return {'thinking': {'type': 'adaptive' if reasoning else 'disabled'}}
+            if isinstance(reasoning, int):
+                if reasoning < 1024:
+                    raise ValueError("Anthropic reasoning budgets must be at least 1024 tokens.")
+                if max_tokens is not None and reasoning >= max_tokens:
+                    raise ValueError(
+                        "Anthropic reasoning budget must be less than max_tokens."
+                    )
+                return {
+                    'thinking': {'type': 'enabled', 'budget_tokens': reasoning}
+                }
+            if isinstance(reasoning, str):
+                return {
+                    'thinking': {'type': 'adaptive'},
+                    'output_config': {'effort': reasoning},
+                }
+            raise TypeError("Anthropic reasoning must be a named level, bool, int, dict, or None.")
+
+        if self.provider == 'ollama':
+            if not isinstance(reasoning, (str, bool)):
+                raise TypeError("Ollama reasoning must be a named level, bool, dict, or None.")
+            return {'think': reasoning}
+
+        return {}
     
     def _initialize_client(self):
         """Initialize the appropriate client."""
@@ -188,7 +287,9 @@ class LLMClient:
             **kwargs) -> str:
         """Route to the correct provider implementation."""
         if self.provider == 'google':
-            return self._generate_google(prompt, system_message, temperature, **kwargs)
+            return self._generate_google(
+                prompt, system_message, temperature, max_tokens, **kwargs
+            )
         
         elif self.provider == 'openai':
             return self._generate_openai(prompt, system_message, temperature, max_tokens, **kwargs)
@@ -207,17 +308,36 @@ class LLMClient:
             prompt: str,
             system_message: str,
             temperature: Optional[float],
+            max_tokens: int,
             **kwargs) -> str:
         """Generate using Google GenAI."""
         from google.genai import types
+
+        config_params = {
+            "system_instruction": system_message,
+            "max_output_tokens": max_tokens,
+        }
+        if temperature is not None:
+            config_params["temperature"] = temperature
+        config_params.update(self._reasoning_params(max_tokens))
+        config_params.update(kwargs)
+
+        thinking_config = config_params.get("thinking_config")
+        thinking_config_type = getattr(types, "ThinkingConfig", None)
+        thinking_config_fields = getattr(thinking_config_type, "model_fields", {})
+        if (
+            isinstance(thinking_config, dict)
+            and "thinking_level" in thinking_config
+            and "thinking_level" not in thinking_config_fields
+        ):
+            raise RuntimeError(
+                "Named Google reasoning levels require google-genai>=1.51.0. "
+                "Upgrade google-genai or pass reasoning as an integer token budget."
+            )
         
         response = self.client.models.generate_content(
             model=self.model_name,
-            config=types.GenerateContentConfig(
-                system_instruction=system_message,
-                temperature=temperature,
-                **kwargs
-            ),
+            config=types.GenerateContentConfig(**config_params),
             contents=prompt
         )
         return response.text
@@ -232,8 +352,9 @@ class LLMClient:
         """Generate using OpenAI."""
         
         # Newer models use max_completion_tokens instead of max_tokens
-        newer_models = ['gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-4o', 'gpt-5-nano', 'gpt-5-mini', 'o1', 'o3']
-        uses_completion_tokens = any(model in self.model_name.lower() for model in newer_models)
+        model_lower = self.model_name.lower()
+        completion_token_prefixes = ('gpt-4o', 'gpt-5', 'gpt-6', 'o1', 'o3', 'o4')
+        uses_completion_tokens = model_lower.startswith(completion_token_prefixes)
         
         params = {
             "model": self.model_name,
@@ -250,7 +371,8 @@ class LLMClient:
             params["max_completion_tokens"] = max_tokens
         else:
             params["max_tokens"] = max_tokens
-            
+
+        params.update(self._reasoning_params(max_tokens))
         params.update(kwargs)
         
         response = self.client.chat.completions.create(**params)
@@ -277,11 +399,15 @@ class LLMClient:
         
         if temperature is not None:
             params["temperature"] = temperature
-            
+
+        params.update(self._reasoning_params(max_tokens))
         params.update(kwargs)
         
         response = self.client.messages.create(**params)
-        return response.content[0].text
+        for block in response.content:
+            if getattr(block, 'type', None) == 'text':
+                return block.text
+        raise RuntimeError("Anthropic response did not contain a text block.")
     
     def _generate_ollama(
         self,
@@ -289,35 +415,29 @@ class LLMClient:
         system_message: str,
         temperature: Optional[float],
         max_tokens: int,
-        thinking_mode=True,
         **kwargs
     ) -> str:
-        """Generate using Ollama (OpenAI-compatible API)."""
-        # Set thinking_mode to "high" if the model name contains gpt-oss
-        if "gpt-oss" in self.model_name.lower():
-            thinking_mode = "high"
-        
+        """Generate using Ollama."""
         options = {
             "max_tokens": max_tokens,
-            # Some models treat this as a boolean (True/False)
-            # Others (like gpt-oss) might accept strings "low", "medium", "high"
-            'stream': False,
-            "think": thinking_mode
         }
         
         if temperature is not None:
             options["temperature"] = temperature
             
         options.update(kwargs)
-        
-        response = self.client.chat(
-            model=self.model_name,
-            messages=[
+
+        params = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt}
             ],
-            options=options
-        )
+            "options": options,
+            "stream": False,
+        }
+        params.update(self._reasoning_params(max_tokens))
+        response = self.client.chat(**params)
         
         return response['message']['content']
     
@@ -345,7 +465,8 @@ class LLMClient:
             
             if temperature is not None:
                 params["temperature"] = temperature
-                
+
+            params.update(self._reasoning_params(max_tokens))
             params.update(kwargs)
             
             # Use OpenAI-compatible chat completions endpoint

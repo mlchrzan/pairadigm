@@ -35,6 +35,7 @@ def _metadata_from_obj(obj: "Pairadigm") -> Dict[str, Any]:
         # Client config
         "model_names": obj.model_names,
         "providers": [c.provider for c in obj.clients],
+        "reasoning": [getattr(c, "reasoning", None) for c in obj.clients],
         # Column names
         "item_id_name": obj.item_id_name,
         "text_name": obj.text_name,
@@ -205,7 +206,17 @@ def load_pairadigm(
     from .client import LLMClient
 
     model_names = meta["model_names"]
+    if not isinstance(model_names, list):
+        raise ValueError("Invalid metadata: 'model_names' must be a list.")
+
     providers   = meta.get("providers", [None] * len(model_names))
+    reasoning   = meta.get("reasoning", [None] * len(model_names))
+    for field_name, values in (("providers", providers), ("reasoning", reasoning)):
+        if not isinstance(values, list) or len(values) != len(model_names):
+            raise ValueError(
+                f"Invalid metadata: '{field_name}' must be a list with "
+                f"{len(model_names)} entries to match 'model_names'."
+            )
 
     if api_keys is not None:
         if isinstance(api_keys, str):
@@ -237,9 +248,17 @@ def load_pairadigm(
         base_urls_list = [None] * len(model_names)
 
     clients = []
-    for model_name, provider, api_key_val, base_url_val in zip(model_names, providers, api_keys_list, base_urls_list):
+    for model_name, provider, reasoning_val, api_key_val, base_url_val in zip(
+        model_names, providers, reasoning, api_keys_list, base_urls_list
+    ):
         try:
-            client = LLMClient(model_name=model_name, provider=provider, api_key=api_key_val, base_url=base_url_val)
+            client = LLMClient(
+                model_name=model_name,
+                provider=provider,
+                api_key=api_key_val,
+                base_url=base_url_val,
+                reasoning=reasoning_val,
+            )
         except ValueError as exc:
             # API key missing — create a shell client that will fail at use-time
             warnings.warn(
@@ -251,6 +270,7 @@ def load_pairadigm(
             client = LLMClient.__new__(LLMClient)
             client.model_name = model_name
             client.provider   = provider
+            client.reasoning  = reasoning_val
             client.api_key    = None
             client.base_url   = None
             client.client     = None

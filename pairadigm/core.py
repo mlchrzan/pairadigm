@@ -37,39 +37,74 @@ from . import visualization as _viz
 
 _MODEL_COSTS_PER_1M_TOKENS = {
     # Format: model prefix string match: (input_cost_per_1m, output_cost_per_1m)
+    # Standard text-token rates as of 2026-09-29. For tiered context pricing,
+    # this table uses the short-context rate.
 
     # --- OpenAI Models ---
-    "gpt-5.5": (5.00, 30.00),          # NEW: Latest frontier model (Apr 2026)
-    "gpt-5.4": (2.50, 15.00),          # Flagship reasoning model
-    "gpt-5.4-mini": (0.75, 4.50),      # High-performance efficient model
-    "gpt-5.4-nano": (0.20, 1.25),      # Most cost-efficient GPT-5 class
-    "gpt-4o": (2.50, 10.00),
+    "gpt-6-astra": (10.00, 50.00),
+    "gpt-6.1-sol": (2.00, 10.00),
+    "gpt-6-sol": (2.00, 10.00),
+    "gpt-6-luna": (0.10, 0.50),
+    "gpt-5.6-sol": (4.00, 20.00),
+    "gpt-5.6-terra": (2.00, 12.00),
+    "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-5.5-pro": (30.00, 180.00),
+    "gpt-5.5": (5.00, 30.00),
+    "gpt-5.4-pro": (30.00, 180.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.2-pro": (21.00, 168.00),
+    "gpt-5.2": (1.75, 14.00),
+    "gpt-5.1": (1.25, 10.00),
+    "gpt-5-pro": (15.00, 120.00),
+    "gpt-5-mini": (0.25, 2.00),
+    "gpt-5-nano": (0.05, 0.40),
+    "gpt-5": (1.25, 10.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+    "gpt-4.1": (2.00, 8.00),
     "gpt-4o-mini": (0.15, 0.60),
-    "o1": (15.00, 60.00),              # Specialized reasoning (Standard)
-    "o1-mini": (3.00, 12.00),          # Specialized reasoning (Efficient)
-    "o4-mini": (0.55, 2.20),           # NEW: Latest efficient reasoning model
-    "o3-mini": (1.10, 4.40),           # Optimized reasoning throughput
+    "gpt-4o": (2.50, 10.00),
+    "o1-pro": (150.00, 600.00),
+    "o1": (15.00, 60.00),
+    "o3-pro": (20.00, 80.00),
+    "o3-mini": (1.10, 4.40),
+    "o3": (2.00, 8.00),
+    "o4-mini": (1.10, 4.40),
 
     # --- Google Gemini Models ---
-    "gemini-3.5-flash": (1.50, 9.00),      # NEW: Flagship fast model (May 2026)
-    "gemini-3.1-pro": (2.00, 12.00),       # Flagship Gemini (<=200k context)
-    "gemini-3.1-flash-lite": (0.25, 1.50), # NEW: Budget 3.x option
-    "gemini-3-flash": (0.50, 3.00),        # Balanced speed/intelligence
-    "gemini-2.5-flash": (0.30, 2.50),      # Improved 2.5 series
-    "gemini-2.5-flash-lite": (0.10, 0.40), # Direct successor to 2.0 Flash
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-3.8-flash": (0.75, 3.75),
+    "gemini-3.7-flash": (0.75, 3.75),
+    "gemini-3.6-flash": (0.75, 3.75),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.1-pro-preview": (2.00, 12.00),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-3-flash-preview": (0.50, 3.00),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
 
     # --- Anthropic Claude Models ---
-    "claude-fable-5": (10.00, 50.00),    # NEW: Mythos-class autonomous agent (Jun 9, 2026)
-    "claude-4.8-opus": (5.00, 25.00),    # Latest flagship (May 28, 2026)
-    "claude-4.7-opus": (5.00, 25.00),    # Same price, new tokenizer
-    "claude-4.6-opus": (5.00, 25.00),    # Intelligent frontier model
-    "claude-4.6-sonnet": (3.00, 15.00),  # Leading agentic/coding model
-    "claude-4.5-haiku": (1.00, 5.00),    # High-speed model
+    "claude-fable-5-1": (10.00, 50.00),
+    "claude-mythos-5-1": (10.00, 50.00),
+    "claude-fable-5": (10.00, 50.00),
+    "claude-mythos-5": (10.00, 50.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-4-7": (5.00, 25.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-opus-4-5": (5.00, 25.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-5-haiku": (0.80, 4.00),
-    "claude-3-haiku": (0.25, 1.25),      # Legacy support
+    "claude-3-haiku": (0.25, 1.25),
 }
 
 def _estimate_token_count(text: str) -> int:
@@ -143,7 +178,7 @@ class Pairadigm:
         **Required.** List of prompt templates used to generate CGCoT breakdowns.
         Every prompt must include a ``{text}`` placeholder.  Prompts after the
         first may also reference ``{previous_answers}`` to chain responses.
-    model_name : str or list of str, default ``'gemini-2.0-flash-exp'``
+    model_name : str or list of str, default ``'gemini-3.8-flash'``
         Name(s) of the LLM model(s) to use.  Pass a list to run multiple models
         in parallel (e.g. for ensemble annotation).
     api_key : str or list of str, optional
@@ -152,6 +187,10 @@ class Pairadigm:
     base_url : str or list of str, optional
         Base URL(s) for the LLM provider(s).  Useful for OpenAI-compatible
         local servers or proxies.
+    reasoning : str, bool, int, dict, or list, optional
+        Reasoning setting(s) corresponding to each model. A scalar is applied
+        to every model; a list configures each client independently. Use
+        ``None`` for non-reasoning models or to keep a model's default.
     target_concept : str
         **Required.** The concept being measured — used in comparison prompts and
         score column names (e.g. ``'persuasiveness'``, ``'argumentative quality'``).
@@ -220,9 +259,10 @@ class Pairadigm:
         llm_annotator_cols: Optional[List[str]] = None,
         prior_breakdown_cols: Optional[List[str]] = None,
         cgcot_prompts: Optional[List[str]] = None,
-        model_name: Optional[Union[str, List[str]]] = "gemini-2.0-flash-exp",
+        model_name: Optional[Union[str, List[str]]] = "gemini-3.8-flash",
         api_key: Optional[Union[str, List[str]]] = None,
         base_url: Optional[Union[str, List[str]]] = None,
+        reasoning: Optional[Any] = None,
         target_concept: Optional[str] = None,
         llm_clients: Optional[Union[LLMClient, List[LLMClient]]] = None,
         save_dir: Optional[str] = None,
@@ -281,7 +321,7 @@ class Pairadigm:
         self._apply_column_renames(prior_breakdown_cols, paired)
 
         # Initialise clients
-        self._init_clients(llm_clients, model_name, api_key, base_url)
+        self._init_clients(llm_clients, model_name, api_key, base_url, reasoning)
 
         # Auto-save directory (9a-autosave)
         self.save_dir: Optional[str] = save_dir
@@ -426,7 +466,7 @@ class Pairadigm:
                 self.column_renames[prior_breakdown_cols[0]] = "CGCoT_Breakdown"
                 self.prior_breakdown_cols = ["CGCoT_Breakdown"]
 
-    def _init_clients(self, llm_clients, model_name, api_key, base_url):
+    def _init_clients(self, llm_clients, model_name, api_key, base_url, reasoning):
         if llm_clients is not None:
             from unittest.mock import Mock
             if isinstance(llm_clients, (LLMClient, Mock)) or type(llm_clients).__name__ in ("Mock", "MagicMock"):
@@ -443,10 +483,10 @@ class Pairadigm:
         elif not isinstance(model_name, list):
             raise TypeError("model_name must be str or List[str].")
 
-        def _normalise(param, name, length):
+        def _normalise(param, name, length, scalar_types=(str,)):
             if param is None:
                 return [None] * length
-            if isinstance(param, str):
+            if isinstance(param, scalar_types):
                 return [param] * length
             if isinstance(param, list):
                 if len(param) != length:
@@ -454,14 +494,17 @@ class Pairadigm:
                         f"If {name} is a list, it must have the same length as model_name."
                     )
                 return param
-            raise TypeError(f"{name} must be str, list of str, or None.")
+            raise TypeError(f"{name} must be a supported scalar, list, or None.")
 
         base_url = _normalise(base_url, "base_url", len(model_name))
         api_key  = _normalise(api_key,  "api_key",  len(model_name))
+        reasoning = _normalise(
+            reasoning, "reasoning", len(model_name), (str, bool, int, dict)
+        )
 
         self.clients = [
-            LLMClient(api_key=k, model_name=m, base_url=u)
-            for m, k, u in zip(model_name, api_key, base_url)
+            LLMClient(api_key=k, model_name=m, base_url=u, reasoning=r)
+            for m, k, u, r in zip(model_name, api_key, base_url, reasoning)
         ]
         self.model_names = model_name
 
@@ -577,18 +620,23 @@ class Pairadigm:
         Returns
         -------
         pd.DataFrame
-            One row per client with columns ``index``, ``model_name``, and
-            ``provider``.
+            One row per client with columns ``index``, ``model_name``,
+            ``provider``, and ``reasoning``.
 
         Examples
         --------
         >>> p.get_clients_info()
-           index           model_name  provider
-        0      0  gemini-2.0-flash-exp    google
-        1      1               gpt-4o    openai
+           index         model_name  provider reasoning
+        0      0  gemini-3.8-flash    google      high
+        1      1             gpt-4o    openai      None
         """
         return pd.DataFrame(
-            [{"index": i, "model_name": c.model_name, "provider": c.provider}
+            [{
+                "index": i,
+                "model_name": c.model_name,
+                "provider": c.provider,
+                "reasoning": getattr(c, "reasoning", None),
+            }
              for i, c in enumerate(self.clients)]
         )
 
@@ -622,11 +670,11 @@ class Pairadigm:
         --------
         >>> p.test_clients_connection()
         Testing LLM client connections using: 'What is the best restaurant...'...
-          gemini-2.0-flash-exp: MODEL OK
-        {'gemini-2.0-flash-exp': True}
+                    gemini-3.8-flash: MODEL OK
+                {'gemini-3.8-flash': True}
 
         >>> p.test_clients_connection(return_responses=True)
-        {'gemini-2.0-flash-exp': 'Supino Pizzeria on East ...'}
+                {'gemini-3.8-flash': 'Supino Pizzeria on East ...'}
         """
         results: Dict[str, Union[bool, str]] = {}
         print(f"Testing LLM client connections using: '{test_prompt}'...")
