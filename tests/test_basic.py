@@ -83,8 +83,8 @@ class TestPackageMetadata:
     def test_version_is_string(self):
         assert isinstance(pairadigm.__version__, str)
 
-    def test_version_is_1_0_0(self):
-        assert pairadigm.__version__ == "1.0.0"
+    def test_version_is_1_0_1(self):
+        assert pairadigm.__version__ == "1.0.1"
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,9 @@ class TestLLMClient:
         assert c.provider == "ollama"
 
     def test_huggingface_slash_pattern(self):
-        c = pairadigm.LLMClient(model_name="meta-llama/Llama-3.3-70B-Instruct")
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()), \
+             patch.object(pairadigm.LLMClient, "_get_api_key",       return_value="key"):
+            c = pairadigm.LLMClient(model_name="meta-llama/Llama-3.3-70B-Instruct")
         assert c.provider == "huggingface"
 
 
@@ -132,14 +134,14 @@ class TestPairadigmInit:
         assert obj.paired is False
         assert obj.target_concept == "clarity"
 
-    def test_cgcot_prompts_none_raises(self):
+    def test_cgcot_prompts_none_allowed(self):
         df  = _make_item_df()
         cli = _mock_llm_client()
-        with pytest.raises(ValueError, match="cgcot_prompts"):
-            pairadigm.Pairadigm(
-                data=df, item_id_name="id", text_name="text",
-                cgcot_prompts=None, target_concept="X", llm_clients=cli,
-            )
+        obj = pairadigm.Pairadigm(
+            data=df, item_id_name="id", text_name="text",
+            cgcot_prompts=None, target_concept="X", llm_clients=cli,
+        )
+        assert obj.cgcot_prompts is None
 
     def test_target_concept_none_raises(self):
         df  = _make_item_df()
@@ -388,7 +390,7 @@ class TestDawidSkeneEM:
             [1, 1, 0],
             [0, 0, 1],
         ])
-        probs, reliability, conv_iter = _dawid_skene_em(
+        probs, reliability, _, conv_iter = _dawid_skene_em(
             labels, num_classes=2, max_iter=10, tol=1e-4, random_seed=42
         )
         assert probs.shape == (5, 2)
@@ -428,6 +430,30 @@ class TestGetScoreColName:
         obj = _make_pairadigm_instance()
         col = obj.get_score_col_name(decision_col="decision_gpt-4o")
         assert col == "Bradley_Terry_Score_gpt-4o"
+
+
+class TestIRR:
+    def test_irr_calculation(self):
+        from pairadigm.validation import irr
+        df = pd.DataFrame({
+            "human1": ["Text1", "Text2", "Text1", "Text2", "Tie"],
+            "human2": ["Text1", "Text1", "Text2", "Text2", "Text1"],
+            "llm1": ["Text1", "Text2", "Text1", "Text2", "Tie"],
+            "llm2": ["Text1", "Text2", "Text1", "Text2", "Tie"]
+        })
+        res = irr(
+            pairwise_df=df,
+            annotator_cols=["human1", "human2"],
+            llm_annotator_cols=["llm1", "llm2"],
+            annotated=True,
+            llm_annotated=True,
+        )
+        assert isinstance(res, pd.DataFrame)
+        assert len(res) == 3
+        # Human Cohen's Kappa should be ~0 (since they agree on 2/5, disagree/tie on others)
+        assert res.loc[res["group"] == "human", "method"].values[0] == "cohens_kappa"
+        # LLM Cohen's Kappa should be 1.0 (perfect agreement)
+        assert res.loc[res["group"] == "llm", "score"].values[0] == 1.0
 
 
 if __name__ == "__main__":

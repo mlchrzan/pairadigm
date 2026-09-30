@@ -4,6 +4,7 @@ Visualisation helpers for Pairadigm.
 Contains:
   - plot_score_distribution   — interactive Plotly histogram
   - plot_comparison_network   — directed comparison network (fix 1b: guard before lookup)
+  - plot_score_dotplot        — ranked dotplot with error bars and cluster colouring
   - plot_epsilon_sensitivity  — winning-rate vs epsilon sweep
 """
 
@@ -427,6 +428,197 @@ def plot_comparison_network(
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         ),
+    )
+
+    if return_fig:
+        return fig
+    fig.show()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Score dotplot (ranked items with error bars and cluster colouring)
+# ---------------------------------------------------------------------------
+
+def plot_score_dotplot(
+    scored_df: pd.DataFrame,
+    target_concept: str,
+    score_col: Optional[str] = None,
+    se_col: Optional[str] = None,
+    cluster_col: Optional[str] = None,
+    classify_method: Optional[str] = None,
+    n_clusters: int = 3,
+    item_id_col: Optional[str] = None,
+    title: Optional[str] = None,
+    template: str = "plotly_white",
+    return_fig: bool = False,
+) -> Optional[go.Figure]:
+    """
+    Plot a ranked dotplot of item scores with optional error bars and cluster
+    colouring.
+
+    Items are ranked by score (x-axis = rank, y-axis = score).  If a standard-
+    error column is available, vertical error bars are drawn.  If a cluster
+    column is provided (or generated on-the-fly via *classify_method*), points
+    are coloured by cluster membership.
+
+    Parameters
+    ----------
+    scored_df : pd.DataFrame
+        DataFrame containing scored items (``Pairadigm.scored_df``).
+    target_concept : str
+        Name of the concept being measured (used in axis labels / title).
+    score_col : str or None
+        Score column name.  If ``None``, auto-detected.
+    se_col : str or None
+        Standard-error column name.  If ``None``, auto-detected from
+        a column ending with ``_SE`` or ``_SE_full`` that matches the
+        score column prefix.
+    cluster_col : str or None
+        Column name with pre-computed cluster labels.  If ``None`` and
+        *classify_method* is set, clusters are computed on the fly.
+    classify_method : str or None
+        If provided (e.g. ``'kmeans'``, ``'mean'``), run classification
+        on the fly to generate cluster labels.  Ignored when *cluster_col*
+        already exists in *scored_df*.
+    n_clusters : int, default 3
+        Number of clusters (forwarded to the classifier when
+        *classify_method* is not None).
+    item_id_col : str or None
+        Column name for item identifiers (used in hover text).  If ``None``,
+        the DataFrame index is used.
+    title : str or None
+        Plot title.  Auto-generated if ``None``.
+    template : str, default ``'plotly_white'``
+        Plotly template.
+    return_fig : bool, default False
+        If ``True``, returns the figure object instead of displaying it.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure or None
+    """
+    if scored_df is None:
+        raise ValueError("No scored DataFrame found. Run score_items() first.")
+
+    # --- Auto-detect score column ---
+    if score_col is None:
+        full_cols  = [c for c in scored_df.columns if c.endswith("_Score_full")]
+        plain_cols = [c for c in scored_df.columns
+                      if c.endswith("_Score") and not c.endswith("_Score_split")
+                      and not c.endswith("_Score_full")]
+        score_col = (full_cols or plain_cols or [None])[0]
+        if score_col is None:
+            raise ValueError(
+                "Could not auto-detect a score column. "
+                f"Available columns: {list(scored_df.columns)}"
+            )
+
+    if score_col not in scored_df.columns:
+        raise ValueError(f"Column '{score_col}' not found in scored DataFrame.")
+
+    # --- Auto-detect SE column ---
+    if se_col is None:
+        prefix = score_col.replace("_Score", "_SE").replace("_Score_full", "_SE_full")
+        candidates = [c for c in scored_df.columns if c.startswith(prefix.split("_SE")[0] + "_SE")]
+        se_col = candidates[0] if candidates else None
+
+    # --- Resolve cluster labels ---
+    df = scored_df.dropna(subset=[score_col]).copy()
+
+    if cluster_col and cluster_col in df.columns:
+        pass  # use as-is
+    elif classify_method is not None:
+        # Run classification on-the-fly
+        from sklearn.cluster import KMeans
+        from sklearn.mixture import GaussianMixture
+
+        X = df[[score_col]].values
+        if classify_method == "kmeans":
+            labels = KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit_predict(X)
+        elif classify_method == "gmm":
+            labels = GaussianMixture(n_components=n_clusters, random_state=42).fit_predict(X)
+        elif classify_method == "mean":
+            mean_val = X.mean()
+            labels = (X[:, 0] > mean_val).astype(int)
+        elif classify_method == "hdbscan":
+            try:
+                from hdbscan import HDBSCAN
+            except ImportError:
+                raise ImportError("hdbscan is not installed. pip install hdbscan")
+            labels = HDBSCAN().fit_predict(X)
+        else:
+            raise ValueError(
+                f"Unknown classify_method: '{classify_method}'. "
+                "Choose from 'kmeans', 'gmm', 'hdbscan', 'mean'."
+            )
+        cluster_col = "_dotplot_cluster"
+        df[cluster_col] = labels
+        # Sort cluster labels by mean score
+        cluster_means = df.groupby(cluster_col)[score_col].mean()
+        rank_map = {c: rank for rank, c in enumerate(cluster_means.sort_values().index)}
+        df[cluster_col] = df[cluster_col].map(lambda x: rank_map.get(x, x))
+    else:
+        cluster_col = None
+
+    # --- Sort by score to determine rank ---
+    df = df.sort_values(score_col).reset_index(drop=True)
+    df["_rank"] = range(1, len(df) + 1)
+
+    # --- Build hover text ---
+    if item_id_col and item_id_col in df.columns:
+        hover_col = item_id_col
+    else:
+        hover_col = None
+
+    # --- Build figure ---
+    if title is None:
+        title = f"Ranked {target_concept.title()} Scores"
+
+    if cluster_col is not None:
+        df[cluster_col] = df[cluster_col].astype(str)
+        fig = px.scatter(
+            df, x="_rank", y=score_col,
+            color=cluster_col,
+            hover_data=[hover_col] if hover_col else None,
+            title=title,
+            labels={
+                "_rank": "Rank",
+                score_col: f"{target_concept.title()} Score",
+                cluster_col: "Cluster",
+            },
+            template=template,
+            color_discrete_sequence=px.colors.qualitative.Set2,
+        )
+    else:
+        fig = px.scatter(
+            df, x="_rank", y=score_col,
+            hover_data=[hover_col] if hover_col else None,
+            title=title,
+            labels={
+                "_rank": "Rank",
+                score_col: f"{target_concept.title()} Score",
+            },
+            template=template,
+        )
+
+    # --- Add error bars ---
+    if se_col and se_col in df.columns:
+        fig.update_traces(
+            error_y=dict(
+                type="data",
+                array=df[se_col].values,
+                visible=True,
+                thickness=1.0,
+                width=2,
+            )
+        )
+
+    fig.update_traces(marker=dict(size=7, line=dict(width=0.5, color="DarkSlateGrey")))
+    fig.update_layout(
+        yaxis_title=f"{target_concept.title()} Score",
+        xaxis_title="Rank (low → high)",
+        hovermode="closest",
     )
 
     if return_fig:

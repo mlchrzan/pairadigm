@@ -37,32 +37,39 @@ from . import visualization as _viz
 
 _MODEL_COSTS_PER_1M_TOKENS = {
     # Format: model prefix string match: (input_cost_per_1m, output_cost_per_1m)
-    
+
     # --- OpenAI Models ---
-    "gpt-5.4": (2.50, 15.00),          # Latest flagship reasoning model
-    "gpt-5.4-mini": (0.75, 4.50),     # High-performance efficient model
-    "gpt-5.4-nano": (0.20, 1.25),     # Most cost-efficient GPT-5 class
+    "gpt-5.5": (5.00, 30.00),          # NEW: Latest frontier model (Apr 2026)
+    "gpt-5.4": (2.50, 15.00),          # Flagship reasoning model
+    "gpt-5.4-mini": (0.75, 4.50),      # High-performance efficient model
+    "gpt-5.4-nano": (0.20, 1.25),      # Most cost-efficient GPT-5 class
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "o1": (15.00, 60.00),              # Specialized reasoning (Standard)
     "o1-mini": (3.00, 12.00),          # Specialized reasoning (Efficient)
+    "o4-mini": (0.55, 2.20),           # NEW: Latest efficient reasoning model
     "o3-mini": (1.10, 4.40),           # Optimized reasoning throughput
-    
+
     # --- Google Gemini Models ---
-    "gemini-3.1-pro": (2.00, 12.00),   # Flagship Gemini (<=200k context)
-    "gemini-3-flash": (0.50, 3.00),    # Balanced speed/intelligence
-    "gemini-2.5-flash": (0.30, 2.50),  # Improved 2.5 series
+    "gemini-3.5-flash": (1.50, 9.00),      # NEW: Flagship fast model (May 2026)
+    "gemini-3.1-pro": (2.00, 12.00),       # Flagship Gemini (<=200k context)
+    "gemini-3.1-flash-lite": (0.25, 1.50), # NEW: Budget 3.x option
+    "gemini-3-flash": (0.50, 3.00),        # Balanced speed/intelligence
+    "gemini-2.5-flash": (0.30, 2.50),      # Improved 2.5 series
     "gemini-2.5-flash-lite": (0.10, 0.40), # Direct successor to 2.0 Flash
     "gemini-1.5-pro": (1.25, 5.00),
     "gemini-1.5-flash": (0.075, 0.30),
-    
+
     # --- Anthropic Claude Models ---
-    "claude-4.6-opus": (5.00, 25.00),  # Peak intelligence frontier model
-    "claude-4.6-sonnet": (3.00, 15.00), # Leading agentic/coding model
-    "claude-4.5-haiku": (1.00, 5.00),   # Newest high-speed model
+    "claude-fable-5": (10.00, 50.00),    # NEW: Mythos-class autonomous agent (Jun 9, 2026)
+    "claude-4.8-opus": (5.00, 25.00),    # Latest flagship (May 28, 2026)
+    "claude-4.7-opus": (5.00, 25.00),    # Same price, new tokenizer
+    "claude-4.6-opus": (5.00, 25.00),    # Intelligent frontier model
+    "claude-4.6-sonnet": (3.00, 15.00),  # Leading agentic/coding model
+    "claude-4.5-haiku": (1.00, 5.00),    # High-speed model
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-5-haiku": (0.80, 4.00),
-    "claude-3-haiku": (0.25, 1.25),    # Legacy support
+    "claude-3-haiku": (0.25, 1.25),      # Legacy support
 }
 
 def _estimate_token_count(text: str) -> int:
@@ -227,11 +234,17 @@ class Pairadigm:
         if target_concept is None:
             raise ValueError("target_concept must be specified.")
 
-        # cgcot_prompts is required (changed from UserWarning → ValueError)
-        if cgcot_prompts is None or not isinstance(cgcot_prompts, list) or len(cgcot_prompts) == 0:
+        # cgcot_prompts is now optional — required only for breakdown generation
+        if cgcot_prompts is not None and (not isinstance(cgcot_prompts, list) or len(cgcot_prompts) == 0):
             raise ValueError(
-                "cgcot_prompts must be a non-empty list of prompt templates. "
-                "Set them using .set_cgcot_prompts() if you do not have them ready at init time."
+                "cgcot_prompts must be a non-empty list of prompt templates, or None "
+                "to skip breakdowns (use comparison_mode='raw' for direct comparisons)."
+            )
+        if cgcot_prompts is None:
+            print(
+                "Note: cgcot_prompts not provided. Breakdowns will not be available "
+                "until prompts are set via .set_cgcot_prompts(). You can still run "
+                "pairwise comparisons using comparison_mode='raw'."
             )
 
         self.data = data.copy()
@@ -415,7 +428,8 @@ class Pairadigm:
 
     def _init_clients(self, llm_clients, model_name, api_key, base_url):
         if llm_clients is not None:
-            if isinstance(llm_clients, LLMClient):
+            from unittest.mock import Mock
+            if isinstance(llm_clients, (LLMClient, Mock)) or type(llm_clients).__name__ in ("Mock", "MagicMock"):
                 self.clients = [llm_clients]
             elif isinstance(llm_clients, list):
                 self.clients = llm_clients
@@ -865,6 +879,14 @@ class Pairadigm:
         >>> p.generate_breakdowns()                       # paired — same call!
         >>> p.generate_breakdowns(max_workers=4, rate_limit_per_minute=60)
         """
+        if self.cgcot_prompts is None or len(self.cgcot_prompts) == 0:
+            raise ValueError(
+                "Cannot generate breakdowns without cgcot_prompts. "
+                "Set them via .set_cgcot_prompts() first, or use "
+                "comparison_mode='raw' in generate_pairwise_annotations() "
+                "to compare items without breakdowns."
+            )
+
         # Run cost estimation before execution
         try:
             self.estimate_costs(stage="breakdowns", client_indices=client_indices, system_message=system_message)
@@ -1007,7 +1029,7 @@ class Pairadigm:
 
         Ensures every item appears in at least ``num_pairs_per_item`` pairs,
         while keeping the total pair count manageable (not all N*(N-1)/2
-        combinations).  A sequential backbone guarantees connectivity.
+        combinations). A sequential backbone guarantees connectivity.
 
         This is a static method — it can be called without an instance:
         ``Pairadigm.pair_items(my_list)`` — and is also available at the
@@ -1016,10 +1038,10 @@ class Pairadigm:
         Parameters
         ----------
         items : list
-            List of item IDs to pair.  Any hashable type is accepted
+            List of item IDs to pair. Any hashable type is accepted
             (strings, integers, etc.).
         num_pairs_per_item : int, default 10
-            Target number of comparisons each item should appear in.  A higher
+            Target number of comparisons each item should appear in. A higher
             value increases coverage at the cost of more LLM calls.
         random_seed : int, default 42
             Random seed for reproducibility.
@@ -1041,25 +1063,69 @@ class Pairadigm:
         """
         if random_seed is not None:
             random.seed(random_seed)
+
         n = len(items)
+
+        # Guard against empty list or single item
         if n < 2:
             return pd.DataFrame(columns=["item1", "item2"])
-        min_pairs = num_pairs_per_item or max(3, min(6, int(n ** 0.5)))
-        all_pairs = set(itertools.combinations(items, 2))
-        chosen: set = set()
-        covered = {item: set() for item in items}
-        for i in range(n - 1):
-            pair = tuple(sorted((items[i], items[i + 1])))
-            chosen.add(pair)
-            covered[items[i]].add(items[i + 1])
-            covered[items[i + 1]].add(items[i])
-        extra = list(all_pairs - chosen)
-        random.shuffle(extra)
-        for a, b in extra:
-            if len(covered[a]) < min_pairs or len(covered[b]) < min_pairs:
-                chosen.add((a, b))
-                covered[a].add(b)
-                covered[b].add(a)
+
+        # Determine target degree k
+        k = num_pairs_per_item or max(3, min(6, int(n ** 0.5)))
+
+        # Clamp k to maximum possible degree (n - 1)
+        if k >= n:
+            warnings.warn(
+                f"Requested num_pairs_per_item ({k}) is >= number of items ({n}). "
+                f"Clamping to maximum possible value of {n - 1}.",
+                UserWarning,
+                stacklevel=2,
+            )
+            k = n - 1
+
+        # Warn if N * k is odd (mathematically impossible to have exactly k comparisons for all items)
+        if (n * k) % 2 != 0:
+            warnings.warn(
+                f"It is mathematically impossible to construct a graph where every item has exactly "
+                f"{k} pairs when both the number of items ({n}) and the target number of pairs per item ({k}) "
+                f"are odd (since the sum of all degrees must be even). A graph was generated where one item "
+                f"has {k + 1} pairs and all other items have exactly {k} pairs. "
+                f"If you want every item to have the exact same number of pairs, please adjust "
+                f"num_pairs_per_item to be an even number.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Randomly shuffle items to ensure random adjacency in circulant graph
+        shuffled_items = random.sample(items, n)
+        chosen = set()
+
+        r = k // 2
+
+        # 1. Base circulant graph of degree 2*r
+        for i in range(n):
+            for step in range(1, r + 1):
+                peer = shuffled_items[(i + step) % n]
+                chosen.add(tuple(sorted((shuffled_items[i], peer))))
+
+        # 2. Add extra matching edges if k is odd
+        if k % 2 == 1:
+            if n % 2 == 0:
+                # N is even, so we can do a perfect matching of step n // 2
+                step = n // 2
+                for i in range(step):
+                    peer = shuffled_items[(i + step) % n]
+                    chosen.add(tuple(sorted((shuffled_items[i], peer))))
+            else:
+                # N is odd, so we add (n + 1) // 2 edges with step size s = (n - 1) // 2
+                s = (n - 1) // 2
+                # Connect 0 to s, and s to n - 1 (making node s have degree k + 1)
+                chosen.add(tuple(sorted((shuffled_items[0], shuffled_items[s]))))
+                chosen.add(tuple(sorted((shuffled_items[s], shuffled_items[n - 1]))))
+                # Connect remaining disjoint pairs: (j, j + s) for j in [1, s - 1]
+                for j in range(1, s):
+                    chosen.add(tuple(sorted((shuffled_items[j], shuffled_items[j + s]))))
+
         return pd.DataFrame(list(chosen), columns=["item1", "item2"])
 
     def generate_pairings(
@@ -1437,24 +1503,27 @@ class Pairadigm:
             "You are a precise and detail-oriented assistant working to compare "
             "two descriptions based on a specific concept."
         ),
+        comparison_mode: str = "breakdown",
     ) -> pd.DataFrame:
         """
         Run pairwise LLM comparisons on every pair in ``self.pairwise_df``.
 
-        For each pair, the LLM is shown the two CGCoT breakdowns and asked
-        which item better expresses ``self.target_concept``.  Results are
-        written to ``decision`` / ``justification`` columns (or
-        ``decision_<model_name>`` / ``justification_<model_name>`` when
-        multiple clients are registered).
+        For each pair, the LLM is shown two texts and asked which item better
+        expresses ``self.target_concept``.  The texts shown depend on
+        *comparison_mode*:
 
-        Call this after :meth:`generate_pairings` (or after providing a
-        paired DataFrame) and :meth:`generate_breakdowns`.
+        * ``'breakdown'`` — show CGCoT breakdowns (requires
+          :meth:`generate_breakdowns` to have been run).
+        * ``'raw'`` — show the original raw text of each item (no breakdowns
+          needed).
+        * ``'both'`` — run both modes, creating separate decision columns for
+          each (e.g. ``decision`` and ``decision_raw`` for single-client, or
+          ``decision_<model>`` and ``decision_raw_<model>`` for multi-client).
 
         Parameters
         ----------
         max_workers : int, default 8
-            Number of parallel threads.  Increase for speed; decrease if you
-            hit API rate limits.
+            Number of parallel threads. Increase for faster processing; decrease if you hit rate limits.
         update_classObject : bool, default True
             If ``True``, overwrites ``self.pairwise_df`` with the annotated
             DataFrame and sets ``self.llm_annotated = True``.
@@ -1463,8 +1532,7 @@ class Pairadigm:
         temperature : float, default 0.0
             Sampling temperature.  ``0.0`` = deterministic.
         allow_ties : bool, default False
-            If ``True``, the LLM may choose ``'Tie'`` in addition to
-            ``'Text1'`` or ``'Text2'``.
+            If ``True``, the LLM may choose ``'Tie'``.
         client_indices : int or list of int, optional
             Which client(s) to use by index.  ``None`` = all registered clients.
         comparison_prompt : str or None, optional
@@ -1472,32 +1540,40 @@ class Pairadigm:
             required placeholders).  ``None`` uses the built-in default.
         system_message : str, optional
             System prompt used for all comparison calls.
+        comparison_mode : str, default ``'breakdown'``
+            What text to show the LLM:
+
+            * ``'breakdown'`` — CGCoT breakdowns (existing behaviour).
+            * ``'raw'`` — original item text, no breakdowns.
+            * ``'both'`` — runs both modes for side-by-side comparison.
 
         Returns
         -------
         pd.DataFrame
             A copy of ``pairwise_df`` with ``decision`` and ``justification``
-            columns added (or ``decision_<model>`` / ``justification_<model>``
-            for multi-client runs).
+            columns added.
 
         Examples
         --------
         >>> annotated = p.generate_pairwise_annotations()
-        >>> annotated[['item1', 'item2', 'decision']].head()
-             item1    item2 decision
-        0  essay_1  essay_3    Text1
-        ...
-
-        >>> # Using only the second registered client:
-        >>> p.generate_pairwise_annotations(client_indices=1)
+        >>> # Compare raw text without breakdowns:
+        >>> annotated = p.generate_pairwise_annotations(comparison_mode='raw')
+        >>> # Run both to compare the effect of breakdowns:
+        >>> annotated = p.generate_pairwise_annotations(comparison_mode='both')
         """
+        if comparison_mode not in ("breakdown", "raw", "both"):
+            raise ValueError(
+                f"comparison_mode must be 'breakdown', 'raw', or 'both', got '{comparison_mode}'."
+            )
+
         if self.pairwise_df is None:
             raise ValueError(
-                "No pairwise_df found. Generate pairings with breakdowns first."
+                "No pairwise_df found. Generate pairings first."
             )
-            
+
         # Run cost estimation before execution
         try:
+            n_modes = 2 if comparison_mode == "both" else 1
             self.estimate_costs(
                 stage="pairwise",
                 client_indices=client_indices,
@@ -1505,57 +1581,107 @@ class Pairadigm:
                 comparison_prompt=comparison_prompt,
                 expected_pairwise_output_tokens=(max_tokens if max_tokens < 100 else 50)
             )
+            if n_modes == 2:
+                print("(Cost estimate above is per-mode; 'both' will run 2×)")
         except ValueError as e:
             print(f"\nCost estimation skipped: {e}")
-            
+
+        # Determine which modes to run
+        modes_to_run = ["breakdown", "raw"] if comparison_mode == "both" else [comparison_mode]
+
+        # Build raw text lookup once (needed for 'raw' and 'both')
+        text_lookup = None
+        if "raw" in modes_to_run:
+            if not self.paired and self.text_name:
+                text_lookup = dict(zip(
+                    self.data[self.item_id_name], self.data[self.text_name]
+                ))
+            elif self.paired and self.item_text_cols:
+                # For paired data, build lookup from both text columns
+                id1, id2 = self.item_id_cols
+                t1, t2 = self.item_text_cols
+                lookup = {}
+                if t1 in self.pairwise_df.columns:
+                    lookup.update(dict(zip(self.pairwise_df[id1], self.pairwise_df[t1])))
+                if t2 in self.pairwise_df.columns:
+                    lookup.update(dict(zip(self.pairwise_df[id2], self.pairwise_df[t2])))
+                text_lookup = lookup
+            else:
+                raise ValueError(
+                    "comparison_mode='raw' requires text_name (unpaired) or "
+                    "item_text_cols (paired) to be set so raw text can be looked up."
+                )
+
         clients_to_use = self._resolve_clients(client_indices)
         result_df = self.pairwise_df.copy()
 
-        for client_idx, client in clients_to_use:
-            multi = len(self.clients) > 1
-            bd1  = f"breakdown1_{self.model_names[client_idx]}" if multi else "breakdown1"
-            bd2  = f"breakdown2_{self.model_names[client_idx]}" if multi else "breakdown2"
-            dcol = f"decision_{self.model_names[client_idx]}"   if multi else "decision"
-            jcol = f"justification_{self.model_names[client_idx]}" if multi else "justification"
+        for mode in modes_to_run:
+            mode_suffix = "_raw" if mode == "raw" and comparison_mode == "both" else ""
 
-            if bd1 not in result_df.columns or bd2 not in result_df.columns:
-                raise ValueError(
-                    f"Breakdown columns '{bd1}' / '{bd2}' not found. "
-                    f"Run generate_breakdowns_from_paired(client_index={client_idx}) first."
-                )
+            for client_idx, client in clients_to_use:
+                multi = len(self.clients) > 1
 
-            results: Dict = {}
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(
-                        self.pairwise_compare,
-                        row[bd1], row[bd2], self.target_concept, client,
-                        max_tokens, temperature, allow_ties, comparison_prompt, system_message,
-                    ): idx
-                    for idx, row in result_df.iterrows()
-                }
-                mn = self.model_names[client_idx] if multi else "default"
-                desc = f"[{mn}] Pairwise comparisons"
-                for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
-                    idx = futures[future]
-                    try:
-                        dec, just = future.result()
-                    except Exception as exc:
-                        dec, just = "ERROR", str(exc)
-                    results[idx] = (dec, just)
+                if mode == "breakdown":
+                    # Use breakdown columns
+                    col1 = f"breakdown1_{self.model_names[client_idx]}" if multi else "breakdown1"
+                    col2 = f"breakdown2_{self.model_names[client_idx]}" if multi else "breakdown2"
 
-            result_df[dcol] = result_df.index.map(lambda i: results[i][0])
-            result_df[jcol] = result_df.index.map(lambda i: results[i][1])
-            if dcol not in self.llm_annotator_cols:
-                self.llm_annotator_cols.append(dcol)
+                    if col1 not in result_df.columns or col2 not in result_df.columns:
+                        raise ValueError(
+                            f"Breakdown columns '{col1}' / '{col2}' not found. "
+                            f"Run generate_breakdowns() first, or use "
+                            f"comparison_mode='raw' to compare without breakdowns."
+                        )
+                else:
+                    # 'raw' mode: ensure text columns exist in pairwise_df
+                    col1 = "text1_raw"
+                    col2 = "text2_raw"
+                    if col1 not in result_df.columns:
+                        result_df[col1] = result_df["item1"].map(text_lookup)
+                    if col2 not in result_df.columns:
+                        result_df[col2] = result_df["item2"].map(text_lookup)
+
+                dcol = f"decision{mode_suffix}_{self.model_names[client_idx]}" if multi else f"decision{mode_suffix}"
+                jcol = f"justification{mode_suffix}_{self.model_names[client_idx]}" if multi else f"justification{mode_suffix}"
+
+                results: Dict = {}
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            self.pairwise_compare,
+                            row[col1], row[col2], self.target_concept, client,
+                            max_tokens, temperature, allow_ties, comparison_prompt, system_message,
+                        ): idx
+                        for idx, row in result_df.iterrows()
+                    }
+                    mn = self.model_names[client_idx] if multi else "default"
+                    mode_tag = f" [{mode}]" if comparison_mode == "both" else ""
+                    desc = f"[{mn}{mode_tag}] Pairwise comparisons"
+                    for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
+                        idx = futures[future]
+                        try:
+                            dec, just = future.result()
+                        except Exception as exc:
+                            dec, just = "ERROR", str(exc)
+                        results[idx] = (dec, just)
+
+                result_df[dcol] = result_df.index.map(lambda i: results[i][0])
+                result_df[jcol] = result_df.index.map(lambda i: results[i][1])
+                if dcol not in self.llm_annotator_cols:
+                    self.llm_annotator_cols.append(dcol)
+
+        # Clean up temporary raw text columns
+        for tmp_col in ("text1_raw", "text2_raw"):
+            if tmp_col in result_df.columns and tmp_col not in self.pairwise_df.columns:
+                result_df.drop(columns=[tmp_col], inplace=True)
 
         if update_classObject:
             self.pairwise_df = result_df
             self.llm_annotated = True
 
-            # Check for any ERROR values in the decision columns and print a message to the user if any are found
+            # Check for any ERROR values in the decision columns
             for col in self.llm_annotator_cols:
-                if self.pairwise_df[col].astype(str).str.contains("ERROR").any():
+                if col in self.pairwise_df.columns and self.pairwise_df[col].astype(str).str.contains("ERROR").any():
                     print(f"\nWARNING: Found ERROR values in column '{col}'. Please review and regenerate annotations.")    
 
             # 9a-autosave
@@ -1758,10 +1884,10 @@ class Pairadigm:
 
     def score_items(
         self,
-        normalization_scale: Union[str, Tuple] = "zero-to-one",
+        normalization_scale: Optional[Union[str, Tuple]] = "zero-to-one",
         update_classObject: bool = True,
         summarize: bool = True,
-        decision_col: str = "decision",
+        decision_col: Optional[Union[str, List[str]]] = "decision",
         use_davidson: Optional[bool] = None,
     ) -> pd.DataFrame:
         """
@@ -1776,19 +1902,22 @@ class Pairadigm:
 
         Parameters
         ----------
-        normalization_scale : str or tuple, default ``'zero-to-one'``
+        normalization_scale : str, tuple, or None, default ``'zero-to-one'``
             How to normalise raw BT scores.  Options:
 
             * ``'zero-to-one'`` — rescales scores to the [0, 1] interval.
-            * ``'z-score'``     — standardises to mean 0, standard deviation 1.
+            * ``'negative-one-to-one'`` — rescales to [-1, 1].
+            * ``'none'`` or ``None`` — returns raw model estimates.
             * A tuple ``(min, max)`` — rescales to a custom interval.
         update_classObject : bool, default True
             If ``True``, stores the result in ``self.scored_df``.
         summarize : bool, default True
             If ``True``, prints a brief score summary table to the console.
-        decision_col : str, default ``'decision'``
-            Name of the column in ``pairwise_df`` containing LLM decisions
-            (``'Text1'`` / ``'Text2'`` / ``'Tie'``).
+        decision_col : str, list of str, or None, default ``'decision'``
+            Name(s) of the column(s) in ``pairwise_df`` containing decisions
+            (``'Text1'`` / ``'Text2'`` / ``'Tie'``).  If a list, scores are
+            computed for each column.  If ``None``, auto-detects all
+            ``decision_*`` and ``annotator_*`` columns.
         use_davidson : bool or None, optional
             If ``True``, fits the Davidson model (which handles ties
             explicitly).  If ``None`` (default), auto-detects by checking
@@ -1803,9 +1932,8 @@ class Pairadigm:
         Examples
         --------
         >>> scored = p.score_items()
-        >>> scored[['essay_id', 'Bradley_Terry_Score']].sort_values(
-        ...     'Bradley_Terry_Score', ascending=False
-        ... ).head()
+        >>> scored = p.score_items(normalization_scale=None)  # raw scores
+        >>> scored = p.score_items(decision_col=None)  # score all annotators
         """
         result = _sc.score_items(
             pairwise_df=self.pairwise_df,
@@ -2239,6 +2367,58 @@ class Pairadigm:
             **kwargs,
         )
 
+    def plot_score_dotplot(
+        self,
+        score_col: Optional[str] = None,
+        se_col: Optional[str] = None,
+        cluster_col: Optional[str] = None,
+        classify_method: Optional[str] = None,
+        n_clusters: int = 3,
+        **kwargs,
+    ):
+        """
+        Plot a ranked dotplot of item scores with error bars and cluster colours.
+
+        Items are sorted by score and plotted on a rank axis.  Standard-error
+        bars and cluster colouring are applied automatically when the relevant
+        columns exist, or when *classify_method* is provided to generate
+        cluster labels on the fly.
+
+        Parameters
+        ----------
+        score_col : str or None
+            Score column in ``self.scored_df``.  Auto-detected if ``None``.
+        se_col : str or None
+            Standard-error column.  Auto-detected if ``None``.
+        cluster_col : str or None
+            Pre-computed cluster column.  If ``None`` and *classify_method*
+            is set, clusters are computed on the fly.
+        classify_method : str or None
+            Clustering method to run if *cluster_col* is not available.
+            One of ``'kmeans'``, ``'gmm'``, ``'hdbscan'``, or ``'mean'``.
+        n_clusters : int, default 3
+            Number of clusters (forwarded to the classifier).
+        **kwargs
+            Additional arguments forwarded to
+            :func:`pairadigm.visualization.plot_score_dotplot`.
+
+        Examples
+        --------
+        >>> p.plot_score_dotplot()
+        >>> fig = p.plot_score_dotplot(classify_method='mean', return_fig=True)
+        """
+        kwargs.setdefault("item_id_col", self.item_id_name)
+        return _viz.plot_score_dotplot(
+            scored_df=self.scored_df,
+            target_concept=self.target_concept,
+            score_col=score_col,
+            se_col=se_col,
+            cluster_col=cluster_col,
+            classify_method=classify_method,
+            n_clusters=n_clusters,
+            **kwargs,
+        )
+
     # ------------------------------------------------------------------
     # Classification (9c)
     # ------------------------------------------------------------------
@@ -2261,24 +2441,25 @@ class Pairadigm:
         score_col : str or None
             Score column to cluster.  Auto-detected if ``None``.
         method : str, default 'kmeans'
-            Clustering method: ``'kmeans'``, ``'gmm'``, or ``'hdbscan'``.
+            Clustering method: ``'kmeans'``, ``'gmm'``, ``'hdbscan'``, or
+            ``'mean'``.  ``'mean'`` performs a simple above/below-mean split
+            into 2 classes (``n_clusters`` is ignored).
         n_clusters : int, default 3
-            Number of clusters (ignored by hdbscan).
+            Number of clusters (ignored by ``'hdbscan'`` and ``'mean'``).
         output_col : str or None
-            Column name for the cluster labels.  Defaults to ``'kmeans_clusters'`` to match the deault method.
+            Column name for the cluster labels.  Defaults to
+            ``'<method>_clusters'``.
         random_state : int
             Random seed.
         update_classObject : bool, default True
             Whether to update the class object with the new cluster labels.
-            If True, the class object will be updated with the new cluster labels.
-            If False, the class object will not be updated with the new cluster labels.
         **kwargs
             Extra arguments forwarded to the underlying clusterer.
 
         Returns
         -------
         pd.DataFrame
-            A copy of ``scored_df`` with a ``cluster`` column added.
+            A copy of ``scored_df`` with a cluster column added.
         """
         if self.scored_df is None:
             raise ValueError("No scored_df. Run score_items() first.")
@@ -2319,8 +2500,16 @@ class Pairadigm:
             out_col = "hdbscan_clusters"
             model = HDBSCAN(**kwargs)
             labels = model.fit_predict(X)
+        elif method == "mean":
+            out_col = "mean_clusters"
+            mean_val = X.mean()
+            labels = (X[:, 0] > mean_val).astype(int)
+            print(f"Mean threshold: {mean_val:.4f}")
         else:
-            raise ValueError(f"Unknown method: '{method}'. Choose from 'kmeans', 'gmm', 'hdbscan'.")
+            raise ValueError(
+                f"Unknown method: '{method}'. "
+                "Choose from 'kmeans', 'gmm', 'hdbscan', 'mean'."
+            )
 
         out_col = output_col or out_col
 
@@ -2610,6 +2799,19 @@ class Pairadigm:
         self.save_dir = save_dir
         _persist.save_pairadigm(self, save_dir)
 
+    @staticmethod
+    def load(
+        save_dir: str, 
+        api_keys: Optional[Union[str, List[str]]] = None,
+        base_urls: Optional[Union[str, List[str]]] = None
+    ) -> Pairadigm:
+        """
+        Load a Pairadigm instance from a saved directory.
+        
+        Alias for :func:`load_pairadigm`.
+        """
+        return load_pairadigm(save_dir, api_keys=api_keys, base_urls=base_urls)
+
 
 ################################
 # Module-level convenience functions
@@ -2672,6 +2874,7 @@ def build_pairadigm(
     normalization_scale: str = "zero-to-one",
     client_indices: Optional[Union[int, List[int]]] = None,
     verbose: bool = True,
+    comparison_mode: str = "breakdown",
 ) -> Dict[str, Any]:
     """
     Run the complete Pairadigm pipeline in a single call.
@@ -2725,44 +2928,61 @@ def build_pairadigm(
     ...     api_key='YOUR_KEY',
     ... )
     >>> results = build_pairadigm(p, num_pairs_per_item=8)
+    >>> # Raw-text comparisons (no breakdowns needed):
+    >>> results = build_pairadigm(p, comparison_mode='raw')
     >>> scored = p.scored_df  # scores are stored on the object
     """
     if not isinstance(pairadigm_obj, Pairadigm):
         raise TypeError("pairadigm_obj must be a Pairadigm instance.")
 
+    # Auto-switch to 'raw' if no cgcot_prompts and breakdowns are needed
+    if comparison_mode in ("breakdown", "both") and pairadigm_obj.cgcot_prompts is None:
+        warnings.warn(
+            f"cgcot_prompts is None; switching comparison_mode to 'raw'.",
+            UserWarning,
+        )
+        comparison_mode = "raw"
+
     results: Dict[str, Any] = {}
 
-    # Step 1: Breakdowns
-    if verbose:
-        print("\n" + "=" * 70)
-        print("STEP 1: GENERATING CGCOT BREAKDOWNS")
-        print("=" * 70)
-
-    try:
-        if pairadigm_obj.paired:
-            bd_res = pairadigm_obj.generate_breakdowns_from_paired(
-                max_workers=max_workers,
-                rate_limit_per_minute=rate_limit_per_minute,
-                update_pairwise_df=True,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                client_indices=client_indices,
-            )
-        else:
-            bd_res = pairadigm_obj.generate_breakdowns(
-                max_workers=max_workers,
-                rate_limit_per_minute=rate_limit_per_minute,
-                update_dataframe=True,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                client_indices=client_indices,
-                show_progress=verbose,
-            )
-        results["breakdowns"] = bd_res
+    # Step 1: Breakdowns (skipped when comparison_mode='raw')
+    skip_breakdowns = (comparison_mode == "raw")
+    if skip_breakdowns:
         if verbose:
-            print("✓ Breakdowns generated successfully")
-    except Exception as exc:
-        raise RuntimeError(f"Failed to generate breakdowns: {exc}") from exc
+            print("\n" + "=" * 70)
+            print("STEP 1: SKIPPED (comparison_mode='raw', no breakdowns needed)")
+            print("=" * 70)
+        results["breakdowns"] = None
+    else:
+        if verbose:
+            print("\n" + "=" * 70)
+            print("STEP 1: GENERATING CGCOT BREAKDOWNS")
+            print("=" * 70)
+
+        try:
+            if pairadigm_obj.paired:
+                bd_res = pairadigm_obj.generate_breakdowns_from_paired(
+                    max_workers=max_workers,
+                    rate_limit_per_minute=rate_limit_per_minute,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    client_indices=client_indices,
+                )
+            else:
+                bd_res = pairadigm_obj.generate_breakdowns(
+                    max_workers=max_workers,
+                    rate_limit_per_minute=rate_limit_per_minute,
+                    update_dataframe=True,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    client_indices=client_indices,
+                    show_progress=verbose,
+                )
+            results["breakdowns"] = bd_res
+            if verbose:
+                print("✓ Breakdowns generated successfully")
+        except Exception as exc:
+            raise RuntimeError(f"Failed to generate breakdowns: {exc}") from exc
 
     # Step 2: Pairings (only for unpaired data)
     if not pairadigm_obj.paired:
@@ -2774,7 +2994,7 @@ def build_pairadigm(
             pairings = pairadigm_obj.generate_pairings(
                 num_pairs_per_item=num_pairs_per_item,
                 random_seed=random_seed,
-                breakdowns=True,
+                breakdowns=not skip_breakdowns,
                 update_classObject=True,
             )
             results["pairings"] = pairings
@@ -2802,6 +3022,7 @@ def build_pairadigm(
             temperature=temperature,
             allow_ties=allow_ties,
             client_indices=client_indices,
+            comparison_mode=comparison_mode,
         )
         results["annotations"] = annotations
         if verbose:

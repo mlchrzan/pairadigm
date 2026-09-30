@@ -164,6 +164,25 @@ AltTest Results for {pairadigm_obj.target_concept}:
 - Yes! Use `test_all_llms=True` to compare multiple models
 - Lower ω values indicate which LLM is most human-like
 
+### FAQs
+
+- **Why does the LLM I tested have such a low win rate but a high advantage probability?** 
+
+Don't worry, it likely wasn't an error! 
+
+Here is why this happens:
+
+- **Advantage Probability Counts Ties**: The advantage probability is calculated as the mean of llm_indicators, which equals 1 whenever the LLM's score is greater than or equal to the human's score (l_score >= h_score). If the LLM and the human *frequently agree* and give the exact same prediction (a tie), those tied instances still heavily inflate the advantage probability.
+- **Win Rate Requires Statistical Non-Inferiority**: The win rate is the proportion of human annotators that the LLM successfully "beats" using a one-sided statistical t-test. The test evaluates the difference (diff = excl_indicators - llm_indicators) and attempts to reject the null hypothesis that the human is better than the LLM by at least an epsilon margin (default 0.1).
+- **The Divergence Scenario**: Suppose an LLM and a human annotator evaluate 100 instances. They tie exactly 85 times, and the human wins the remaining 15 times (the LLM wins 0 times).
+- **The LLM's advantage probability** will be 0.85 (because l_score >= h_score is True 85% of the time).
+- **However, the average performance difference** (diff) favors the human by +0.15.
+- **Because the sample mean diff (+0.15) is greater than the epsilon margin (0.1)**, the t-test will fail to reject the null hypothesis.
+- **The resulting p-value will be high**, the LLM will not "win" against this human, and if this happens across the board, you will be left with a win rate of 0.
+
+In short: A high advantage probability simply means the LLM is at least tying the human most of the time. However, *if the human dominates all the tie-breakers*, the LLM will fail the non-inferiority statistical test and get a 0 win rate.
+
+
 ---
 
 # Dawid-Skene Reliability Interpretation Guide

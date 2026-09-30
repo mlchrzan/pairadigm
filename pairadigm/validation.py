@@ -20,9 +20,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from scipy.stats import ttest_1samp
+from scipy.stats import ttest_1samp, spearmanr, kendalltau, wilcoxon
+import networkx as nx
+from collections import Counter
 
 from ._stats import by_procedure, accuracy, neg_rmse, sim, ttest
+from .scoring import _fit_bt_model, _fit_davidson_model, TIE_VALUES
 
 
 # ---------------------------------------------------------------------------
@@ -924,9 +927,10 @@ def irr(
             nv = len(valid)
             if nv < 2:
                 continue
-            for c1 in valid:
-                for c2 in valid:
-                    coinc[c2i[c1], c2i[c2]] += 1 / (nv - 1)
+            for idx1 in range(nv):
+                for idx2 in range(nv):
+                    if idx1 != idx2:
+                        coinc[c2i[valid[idx1]], c2i[valid[idx2]]] += 1 / (nv - 1)
         n_total = coinc.sum()
         if n_total == 0:
             raise ValueError("No valid pairs for Krippendorff's Alpha.")
@@ -1227,3 +1231,455 @@ def icc(
 
     print("=" * 70 + "\n")
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Bradley-Terry / Davidson AltTest
+# ---------------------------------------------------------------------------
+
+def bradley_terry_alt_test(
+    pairwise_df: pd.DataFrame,
+    annotator_cols: List[str],
+    llm_decision_col: str,
+    metric: str = "spearman",
+    alternative: str = "less",
+    test_type: str = "wilcoxon",
+    n_bootstraps: int = 0,
+    min_common_items: int = 10,
+    random_seed: Optional[int] = None,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """
+    Perform an AltTest using continuous Bradley-Terry or Davidson scores.
+    
+    1. Finds the largest connected component of pairs for each annotator.
+    2. Fits BT or Davidson models for each annotator individually.
+    3. Calculates pivot-based paired correlations (Human-Human vs. LLM-Human)
+       to resolve non-independence violations:
+       For each human pivot H_i:
+         LH_i = correlation(LLM, H_i)
+         HH_i = mean(correlation(H_j, H_i) for all j != i)
+    4. Performs a statistical test (Wilcoxon signed-rank or paired t-test)
+       on the differences (LH_i - HH_i) to check if LLM alignment is
+       equivalent to or better than human-human agreement.
+       
+    Parameters
+    ----------
+    pairwise_df : pd.DataFrame
+        Pairwise comparisons DataFrame.
+    annotator_cols : list of str
+        Human annotator columns.
+    llm_decision_col : str
+        LLM decision column.
+    metric : str, default 'spearman'
+        Metric to use for correlations. Options: 'spearman', 'kendall'.
+        'pearson' and 'icc' are deprecated and mapped to 'spearman'.
+    alternative : str, default 'less'
+        Alternative hypothesis for the statistical test. Options: 'less', 'greater', 'two-sided'.
+        'less' tests if the LLM is worse than the human baseline (median difference < 0).
+    test_type : str, default 'wilcoxon'
+        Statistical test to run. Options: 'wilcoxon' (non-parametric Wilcoxon signed-rank test)
+        or 'paired_ttest' (parametric paired/one-sample t-test).
+        Old 'mannwhitney' is mapped to 'wilcoxon' and 'ttest' is mapped to 'paired_ttest'.
+    n_bootstraps : int, default 0
+        Number of bootstrap iterations to run (e.g. 500 or 1000) for more robust p-values/CIs
+        based on item-level resampling.
+    min_common_items : int, default 10
+        Minimum number of shared items required to compute correlation between two annotators.
+    random_seed : int or None, default None
+        Random seed for reproducibility of bootstrapping.
+    verbose : bool, default False
+        Whether to print detailed diagnostics.
+        
+    Returns
+    -------
+    dict
+        Dictionary containing correlations, distributions, and test results.
+    """
+    if pairwise_df is None or len(pairwise_df) == 0:
+        raise ValueError("pairwise_df is empty or None.")
+        
+    if llm_decision_col not in pairwise_df.columns:
+        raise ValueError(f"LLM decision column '{llm_decision_col}' not found.")
+        
+    metrics_map = {
+        "spearman": lambda x, y: spearmanr(x, y)[0],
+        "kendall": lambda x, y: kendalltau(x, y)[0],
+    }
+    
+    # Handle deprecated metrics
+    metric_lower = metric.lower()
+    if metric_lower in ("pearson", "icc"):
+        warnings.warn(
+            f"Metric '{metric}' is deprecated because continuous linear/agreement metrics "
+            f"violate assumptions on Bradley-Terry scores. Defaulting to 'spearman'.",
+            UserWarning
+        )
+        metric_lower = "spearman"
+        
+    if metric_lower not in metrics_map and metric_lower != "all":
+        raise ValueError(f"Unknown metric '{metric}'. Choose from {list(metrics_map.keys())} or 'all'.")
+        
+    target_metrics = list(metrics_map.keys()) if metric_lower == "all" else [metric_lower]
+    
+    # Handle deprecated test types
+    test_type_lower = test_type.lower()
+    if test_type_lower == "mannwhitney":
+        warnings.warn(
+            "test_type='mannwhitney' is deprecated and has been mapped to 'wilcoxon' "
+            "to resolve independence violations.",
+            DeprecationWarning
+        )
+        test_type_lower = "wilcoxon"
+    elif test_type_lower == "ttest":
+        warnings.warn(
+            "test_type='ttest' is deprecated and has been mapped to 'paired_ttest' "
+            "to resolve independence violations.",
+            DeprecationWarning
+        )
+        test_type_lower = "paired_ttest"
+        
+    if test_type_lower not in ("wilcoxon", "paired_ttest"):
+        raise ValueError(f"Unknown test_type '{test_type}'. Choose 'wilcoxon' or 'paired_ttest'.")
+        
+    if alternative.lower() not in ("less", "greater", "two-sided"):
+        raise ValueError(f"Unknown alternative '{alternative}'. Choose 'less', 'greater', or 'two-sided'.")
+
+    all_annotators = annotator_cols + [llm_decision_col]
+    annotator_scores = {}
+    
+    if verbose:
+        print(f"Generating scores for {len(annotator_cols)} humans and 1 LLM...")
+        
+    for ann in all_annotators:
+        # Filter valid decisions for this annotator
+        ann_df = pairwise_df.dropna(subset=[ann]).copy()
+        
+        # Build network to check connectivity
+        G = nx.Graph()
+        for _, row in ann_df.iterrows():
+            G.add_edge(row["item1"], row["item2"])
+            
+        if len(G) == 0:
+            if verbose:
+                print(f"Skipping {ann}: no valid comparisons.")
+            continue
+            
+        if not nx.is_connected(G):
+            components = list(nx.connected_components(G))
+            largest_cc = max(components, key=len)
+            n_items = len(largest_cc)
+            
+            if n_items < 30:
+                raise ValueError(f"Largest connected component for '{ann}' has only {n_items} items (<30). Cannot reliably score.")
+            elif 30 <= n_items <= 50:
+                warnings.warn(f"Filtered '{ann}' to largest connected component. Only {n_items} items remain; scores may not be highly reliable.", UserWarning)
+            else:
+                warnings.warn(f"Filtered '{ann}' to largest connected component ({n_items} items).", UserWarning)
+                
+            ann_df = ann_df[ann_df["item1"].isin(largest_cc) & ann_df["item2"].isin(largest_cc)]
+            items = list(largest_cc)
+        else:
+            items = list(G.nodes())
+            
+        item_to_idx = {item: idx for idx, item in enumerate(items)}
+        n_items = len(items)
+        
+        has_ties = ann_df[ann].isin(TIE_VALUES).any()
+        
+        if verbose:
+            model_type = "Davidson" if has_ties else "Bradley-Terry"
+            print(f"[{ann}] Fitting {model_type} on {len(ann_df)} pairs ({n_items} items).")
+            
+        try:
+            if has_ties:
+                scores, _, _, _ = _fit_davidson_model(ann_df, item_to_idx, n_items, ann, ann)
+            else:
+                scores, _, _ = _fit_bt_model(ann_df, item_to_idx, n_items, ann, ann)
+            
+            annotator_scores[ann] = {item: score for item, score in zip(items, scores)}
+        except Exception as e:
+            warnings.warn(f"Failed to fit model for '{ann}': {e}", UserWarning)
+            
+    if llm_decision_col not in annotator_scores:
+        raise ValueError(f"Could not compute scores for LLM ({llm_decision_col}). Cannot perform test.")
+        
+    human_scorers = [h for h in annotator_cols if h in annotator_scores]
+    if len(human_scorers) < 2:
+        raise ValueError("Need at least 2 humans with valid scores to compute Human-Human baseline.")
+        
+    results = {}
+    
+    for m in target_metrics:
+        func = metrics_map[m]
+        
+        # 1. Compute raw correlations for backward compatibility / info
+        hh_raw_corrs = []
+        hh_pairs = []
+        for i in range(len(human_scorers)):
+            for j in range(i + 1, len(human_scorers)):
+                h1, h2 = human_scorers[i], human_scorers[j]
+                s1, s2 = annotator_scores[h1], annotator_scores[h2]
+                common = list(set(s1.keys()) & set(s2.keys()))
+                if len(common) >= min_common_items:
+                    c1 = np.array([s1[c] for c in common])
+                    c2 = np.array([s2[c] for c in common])
+                    if np.std(c1) > 0 and np.std(c2) > 0:
+                        val = func(c1, c2)
+                        if not np.isnan(val):
+                            hh_raw_corrs.append(val)
+                            hh_pairs.append((h1, h2, val))
+                            
+        lh_raw_corrs = []
+        lh_pairs = []
+        s_llm = annotator_scores[llm_decision_col]
+        for h in human_scorers:
+            s_h = annotator_scores[h]
+            common = list(set(s_llm.keys()) & set(s_h.keys()))
+            if len(common) >= min_common_items:
+                c1 = np.array([s_llm[c] for c in common])
+                c2 = np.array([s_h[c] for c in common])
+                if np.std(c1) > 0 and np.std(c2) > 0:
+                    val = func(c1, c2)
+                    if not np.isnan(val):
+                        lh_raw_corrs.append(val)
+                        lh_pairs.append((llm_decision_col, h, val))
+                        
+        # 2. Compute pivot-based paired correlations
+        lh_pivots = []
+        hh_pivots = []
+        valid_pivots = []
+        
+        for i, h_i in enumerate(human_scorers):
+            s_i = annotator_scores[h_i]
+            
+            # LH_i
+            common_llm = list(set(s_llm.keys()) & set(s_i.keys()))
+            if len(common_llm) >= min_common_items:
+                c_llm = np.array([s_llm[c] for c in common_llm])
+                c_i = np.array([s_i[c] for c in common_llm])
+                if np.std(c_llm) > 0 and np.std(c_i) > 0:
+                    lh_val = func(c_llm, c_i)
+                else:
+                    lh_val = np.nan
+            else:
+                lh_val = np.nan
+                
+            # HH_i
+            h_j_vals = []
+            for j, h_j in enumerate(human_scorers):
+                if i == j:
+                    continue
+                s_j = annotator_scores[h_j]
+                common_h = list(set(s_i.keys()) & set(s_j.keys()))
+                if len(common_h) >= min_common_items:
+                    c_i_h = np.array([s_i[c] for c in common_h])
+                    c_j_h = np.array([s_j[c] for c in common_h])
+                    if np.std(c_i_h) > 0 and np.std(c_j_h) > 0:
+                        hh_val = func(c_i_h, c_j_h)
+                        if not np.isnan(hh_val):
+                            h_j_vals.append(hh_val)
+                            
+            if not np.isnan(lh_val) and len(h_j_vals) > 0:
+                lh_pivots.append(lh_val)
+                hh_pivots.append(float(np.mean(h_j_vals)))
+                valid_pivots.append(h_i)
+                
+        if len(lh_pivots) == 0:
+            warnings.warn(f"No valid pivots with sufficient overlap for metric '{m}'.", UserWarning)
+            continue
+            
+        lh_pivots = np.array(lh_pivots)
+        hh_pivots = np.array(hh_pivots)
+        diffs = lh_pivots - hh_pivots
+        
+        # Advantage probability (paired: fraction of times LLM-human correlation exceeds human-human average)
+        # Ties counted as 0.5
+        adv_prob = float(np.mean(lh_pivots > hh_pivots) + 0.5 * np.mean(lh_pivots == hh_pivots))
+        
+        stat = np.nan
+        p_val = np.nan
+        
+        if len(lh_pivots) >= 2:
+            try:
+                if test_type_lower == "wilcoxon":
+                    res = wilcoxon(lh_pivots, hh_pivots, alternative=alternative)
+                    stat = float(res.statistic)
+                    p_val = float(res.pvalue)
+                elif test_type_lower == "paired_ttest":
+                    res = ttest_1samp(diffs, popmean=0, alternative=alternative)
+                    stat = float(res.statistic)
+                    p_val = float(res.pvalue)
+            except Exception as e:
+                warnings.warn(f"Statistical test '{test_type_lower}' failed: {e}. Setting statistic and p-value to NaN.", UserWarning)
+        else:
+            warnings.warn(f"Insufficient valid pivots ({len(lh_pivots)}) to run statistical test.", UserWarning)
+            
+        # Bootstrap logic (resampling items)
+        if n_bootstraps > 0:
+            all_items = list(set().union(*(s.keys() for s in annotator_scores.values())))
+            rng = np.random.default_rng(random_seed)
+            
+            boot_hh_means = []
+            boot_lh_means = []
+            boot_diffs = []
+            boot_adv_probs = []
+            
+            for _ in range(n_bootstraps):
+                boot_items = rng.choice(all_items, size=len(all_items), replace=True)
+                counts = Counter(boot_items)
+                
+                lh_corrs_b = []
+                hh_corrs_b = []
+                
+                for i, h_i in enumerate(human_scorers):
+                    s_i = annotator_scores[h_i]
+                    
+                    # LLM vs H_i on bootstrapped items
+                    common_llm = [item for item in counts if item in s_llm and item in s_i]
+                    if len(common_llm) > 1:
+                        c_llm = []
+                        c_i = []
+                        for item in common_llm:
+                            c_llm.extend([s_llm[item]] * counts[item])
+                            c_i.extend([s_i[item]] * counts[item])
+                        c_llm = np.array(c_llm)
+                        c_i = np.array(c_i)
+                        if np.std(c_llm) > 0 and np.std(c_i) > 0:
+                            lh_val = func(c_llm, c_i)
+                        else:
+                            lh_val = np.nan
+                    else:
+                        lh_val = np.nan
+                        
+                    # H_j vs H_i on bootstrapped items
+                    h_j_vals = []
+                    for j, h_j in enumerate(human_scorers):
+                        if i == j:
+                            continue
+                        s_j = annotator_scores[h_j]
+                        common_h = [item for item in counts if item in s_i and item in s_j]
+                        if len(common_h) > 1:
+                            c_i_h = []
+                            c_j_h = []
+                            for item in common_h:
+                                c_i_h.extend([s_i[item]] * counts[item])
+                                c_j_h.extend([s_j[item]] * counts[item])
+                            c_i_h = np.array(c_i_h)
+                            c_j_h = np.array(c_j_h)
+                            if np.std(c_i_h) > 0 and np.std(c_j_h) > 0:
+                                hh_val = func(c_i_h, c_j_h)
+                                if not np.isnan(hh_val):
+                                    h_j_vals.append(hh_val)
+                                    
+                    if not np.isnan(lh_val) and len(h_j_vals) > 0:
+                        lh_corrs_b.append(lh_val)
+                        hh_corrs_b.append(np.mean(h_j_vals))
+                        
+                if len(lh_corrs_b) > 0:
+                    lh_mean_b = float(np.mean(lh_corrs_b))
+                    hh_mean_b = float(np.mean(hh_corrs_b))
+                    boot_lh_means.append(lh_mean_b)
+                    boot_hh_means.append(hh_mean_b)
+                    boot_diffs.append(lh_mean_b - hh_mean_b)
+                    
+                    # Advantage probability for bootstrap sample
+                    lh_corrs_b = np.array(lh_corrs_b)
+                    hh_corrs_b = np.array(hh_corrs_b)
+                    adv_prob_b = float(np.mean(lh_corrs_b > hh_corrs_b) + 0.5 * np.mean(lh_corrs_b == hh_corrs_b))
+                    boot_adv_probs.append(adv_prob_b)
+                    
+            if len(boot_diffs) > 0:
+                boot_diffs = np.array(boot_diffs)
+                boot_adv_probs = np.array(boot_adv_probs)
+                
+                ci_diff_lower = float(np.percentile(boot_diffs, 2.5))
+                ci_diff_upper = float(np.percentile(boot_diffs, 97.5))
+                
+                ci_adv_lower = float(np.percentile(boot_adv_probs, 2.5))
+                ci_adv_upper = float(np.percentile(boot_adv_probs, 97.5))
+                
+                if alternative == 'two-sided':
+                    p_val = min(1.0, 2.0 * min(np.mean(boot_diffs <= 0), np.mean(boot_diffs >= 0)))
+                elif alternative == 'less':
+                    p_val = float(np.mean(boot_diffs >= 0))
+                elif alternative == 'greater':
+                    p_val = float(np.mean(boot_diffs <= 0))
+                
+                stat = np.nan
+            else:
+                warnings.warn(f"Bootstrap failed to generate valid correlations for metric '{m}'.", UserWarning)
+                n_bootstraps = 0
+
+        lh_mean = float(np.mean(lh_pivots))
+        hh_mean = float(np.mean(hh_pivots))
+        
+        # Test interpretation
+        if alternative == 'two-sided':
+            if p_val > 0.05:
+                interp = "LLM passes the test: its ability to agree with humans is statistically indistinguishable from human ability to agree with other humans."
+            else:
+                if lh_mean > hh_mean:
+                    interp = "LLM aligns with humans BETTER than humans align with each other."
+                else:
+                    interp = "LLM aligns with humans WORSE than humans align with each other."
+        elif alternative == 'less':
+            if p_val <= 0.05:
+                interp = "LLM fails the test: its ability to agree with humans is statistically WORSE than human ability to agree with other humans."
+            else:
+                interp = "LLM passes the test: its ability to agree with humans is not statistically worse than human ability to agree with other humans."
+        elif alternative == 'greater':
+            if p_val <= 0.05:
+                interp = "LLM passes the test: its ability to agree with humans is statistically BETTER than human ability to agree with other humans."
+            else:
+                interp = "LLM fails the test: its ability to agree with humans is not statistically better than human ability to agree with other humans."
+                
+        results[m] = {
+            "human_human_correlations": list(hh_pivots),
+            "llm_human_correlations": list(lh_pivots),
+            "human_human_mean": hh_mean,
+            "llm_human_mean": lh_mean,
+            "test_statistic": float(stat) if not np.isnan(stat) else None,
+            "test_type": test_type_lower,
+            "advantage_probability": adv_prob,
+            "p_value": float(p_val) if not np.isnan(p_val) else None,
+            "interpretation": interp,
+            "human_human_pairs": hh_pairs,
+            "llm_human_pairs": lh_pairs,
+            "raw_human_human_correlations": hh_raw_corrs,
+            "raw_llm_human_correlations": lh_raw_corrs,
+        }
+        
+        if n_bootstraps > 0 and len(boot_diffs) > 0:
+            results[m].update({
+                "bootstrap_p_value": float(p_val),
+                "bootstrap_diff_ci": (ci_diff_lower, ci_diff_upper),
+                "bootstrap_adv_prob_ci": (ci_adv_lower, ci_adv_upper),
+                "bootstrap_hh_means": boot_hh_means,
+                "bootstrap_lh_means": boot_lh_means,
+                "bootstrap_diffs": list(boot_diffs),
+            })
+        
+        if verbose:
+            print(f"\n{'='*70}")
+            if n_bootstraps > 0:
+                print(f"BT-ALTTEST RESULTS (BOOTSTRAPPED, B={n_bootstraps}) - Metric: {m.upper()} (alternative={alternative})")
+            else:
+                print(f"BT-ALTTEST RESULTS - Metric: {m.upper()} ({test_type_lower.upper()}, alternative={alternative})")
+            print(f"{'='*70}")
+            print(f"Human-Human Pivot Mean: {hh_mean:.4f} (n={len(hh_pivots)})")
+            print(f"LLM-Human Pivot Mean:   {lh_mean:.4f} (n={len(lh_pivots)})")
+            print(f"Advantage Prob (LH > HH):   {adv_prob:.4f}")
+            if n_bootstraps > 0 and len(boot_diffs) > 0:
+                print(f"Bootstrap 95% CI (LH - HH): [{ci_diff_lower:.4f}, {ci_diff_upper:.4f}]")
+                print(f"Bootstrap 95% CI (Adv Prob): [{ci_adv_lower:.4f}, {ci_adv_upper:.4f}]")
+                print(f"Bootstrap p-value:          {p_val:.4f}")
+            else:
+                if test_type_lower == "wilcoxon":
+                    print(f"Wilcoxon statistic:   {stat:.4f} (p={p_val:.4f})")
+                else:
+                    print(f"paired-t statistic:   {stat:.4f} (p={p_val:.4f})")
+            print(f"Conclusion:       {interp}")
+            print(f"{'='*70}\n")
+            
+    return results if metric.lower() == "all" else results.get(metric_lower, {})

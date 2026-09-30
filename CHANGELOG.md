@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 09-29-2026
+
+### Added
+- **Flexible Comparison Modes**: Added `comparison_mode` support to `generate_pairwise_annotations()` and `build_pairadigm()`. Comparisons can now use CGCoT breakdowns, raw item text, or both approaches side by side. This is to support ablation studies for the effectiveness of using CGCoT in a given domain.
+- **Bradley-Terry AltTest**: Added `bradley_terry_alt_test()` for comparing LLM-human alignment against human-human agreement using Bradley-Terry or Davidson scores, Spearman or Kendall correlations, paired statistical tests, and optional bootstrap confidence intervals.
+- **Score Dotplots**: Added `plot_score_dotplot()` for visualizing ranked scores with optional standard-error bars and cluster coloring.
+- **Mean-Based Classification**: Added a simple above/below-mean classification method to `Pairadigm.classify()`.
+- **Loading Convenience Method**: Added `Pairadigm.load()` as an alias for `load_pairadigm()`.
+
+### Changed
+- **Optional CGCoT Prompts**: `cgcot_prompts` is no longer required when constructing a `Pairadigm`. Raw-text comparisons can run without generating breakdowns, and `build_pairadigm()` automatically switches to raw mode when prompts are unavailable.
+- **Connected Regular Pairing**: Redesigned `pair_items()` to generate randomized, connected $k$-regular graphs whenever mathematically possible. For odd $N \times k$, it creates a near-regular graph with one item receiving an additional comparison and emits an explanatory warning.
+- **Multi-Annotator Scoring**: `score_items()` now accepts one decision column, a list of columns, or `None` to automatically score all detected LLM and human annotation columns. Passing `normalization_scale=None` now returns raw model estimates.
+- **Human Annotation Imports**: Expanded `append_human_annotations()` to support DataFrames, CSV files, and Excel files; multiple decision columns; reversed pair orientations; normalized decision values; and overwrite protection.
+
+### Fixed
+- **Krippendorff's Alpha**: Corrected the coincidence-matrix calculation so ratings are no longer compared with themselves, preventing inflated agreement estimates.
+
 ## [1.0.1] - 2026-04-18
 ### Updated
 - **Robust Davidson Scoring**: Replaced the unstable iterative approach for estimating Davidson scores with a mathematically robust optimization method (`scipy.optimize.minimize`). This explicitly estimates both item strengths and the tie propensity parameter ($\tau$) efficiently. 

@@ -8,7 +8,7 @@ score column name resolution, and summary statistics.
 from __future__ import annotations
 
 import warnings
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import choix
 import numpy as np
@@ -226,7 +226,7 @@ def _compute_bt_se(
     log_strengths: np.ndarray,
     comparisons: list,
     n_items: int,
-    normalization_scale: Union[str, Tuple[float, float]],
+    normalization_scale: Optional[Union[str, Tuple[float, float]]],
 ) -> np.ndarray:
     """
     Approximate SE for normalised BT scores via the Fisher Information Matrix
@@ -239,8 +239,9 @@ def _compute_bt_se(
     comparisons : list of (int, int)
         ``(winner_idx, loser_idx)`` pairs used to fit the model.
     n_items : int
-    normalization_scale : str or tuple
-        Same normalisation applied to the scores.
+    normalization_scale : str, tuple, or None
+        Same normalisation applied to the scores.  ``None`` is treated
+        identically to ``'none'`` (raw log-strength scale).
 
     Returns
     -------
@@ -287,7 +288,7 @@ def _compute_bt_se(
         if raw_range == 0:
             return np.zeros(n_items)
         jacobian = 2.0 * strengths / raw_range
-    else:  # 'none'
+    else:  # 'none' or None
         jacobian = strengths  # SE on raw log-strength scale
 
     return np.abs(jacobian) * se_log
@@ -295,9 +296,19 @@ def _compute_bt_se(
 
 def _normalize_bt_scores(
     scores: np.ndarray,
-    normalization_scale: Union[str, Tuple[float, float]],
+    normalization_scale: Optional[Union[str, Tuple[float, float]]],
 ) -> np.ndarray:
-    """Apply normalisation to a raw BT/Davidson score array."""
+    """Apply normalisation to a raw BT/Davidson score array.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Raw log-strength scores.
+    normalization_scale : str, tuple, or None
+        ``None`` is treated identically to ``'none'`` (returns raw scores).
+    """
+    if normalization_scale is None or normalization_scale == "none":
+        return scores
     if isinstance(normalization_scale, tuple):
         if len(normalization_scale) != 2:
             raise ValueError(
@@ -316,18 +327,240 @@ def _normalize_bt_scores(
         return (scores - scores.min()) / (scores.max() - scores.min())
     elif normalization_scale == "negative-one-to-one":
         return 2 * (scores - scores.min()) / (scores.max() - scores.min()) - 1
-    elif normalization_scale == "none":
-        return scores
     else:
         raise ValueError(
             "normalization_scale must be 'zero-to-one', 'negative-one-to-one', "
-            "'none', or a (min, max) tuple"
+            "'none', None, or a (min, max) tuple"
         )
 
 
 # ---------------------------------------------------------------------------
 # Main scoring entry point
 # ---------------------------------------------------------------------------
+
+def _score_single_col(
+    pairwise_df: pd.DataFrame,
+    data: pd.DataFrame,
+    item_id_name: str,
+    target_concept: str,
+    paired: bool,
+    item_id_cols: Optional[list],
+    result_df: pd.DataFrame,
+    normalization_scale: Optional[Union[str, Tuple[float, float]]],
+    summarize: bool,
+    decision_col: str,
+    use_davidson: Optional[bool],
+) -> pd.DataFrame:
+    """Score items for a single decision column, writing onto *result_df*."""
+
+    if decision_col not in pairwise_df.columns:
+        available = [c for c in pairwise_df.columns if c.startswith("decision") or c.startswith("annotator_")]
+        raise ValueError(
+            f"Decision column '{decision_col}' not found in pairwise_df. "
+            f"Available decision columns: {available}"
+        )
+
+    # Auto-detect ties
+    has_ties = pairwise_df[decision_col].isin(TIE_VALUES).any()
+    _use_davidson = use_davidson
+    if _use_davidson is None:
+        _use_davidson = has_ties
+        if has_ties:
+            num_ties = pairwise_df[decision_col].isin(TIE_VALUES).sum()
+            print(f"Detected {num_ties} ties in '{decision_col}'. Using Davidson model.")
+
+    # Filter valid decisions
+    valid_values = WIN_1_VALUES + WIN_2_VALUES + (TIE_VALUES if _use_davidson else [])
+    valid_df = pairwise_df[pairwise_df[decision_col].isin(valid_values)]
+
+    if len(valid_df) == 0:
+        warnings.warn(
+            f"No valid comparisons found for '{decision_col}'. Skipping."
+        )
+        return result_df
+
+    if len(valid_df) < len(pairwise_df):
+        warnings.warn(
+            f"[{decision_col}] Some rows filtered out due to invalid decision values. "
+            f"Using {len(valid_df)}/{len(pairwise_df)} comparisons."
+        )
+
+    model_label = (
+        decision_col.replace("decision_", "").replace("annotator_", "")
+        if decision_col not in ("decision",)
+        else "default"
+    )
+
+    # Detect split columns
+    has_splits = (
+        "item1_split" in pairwise_df.columns
+        and "item2_split" in pairwise_df.columns
+    )
+
+    # Build item → index mapping
+    if paired and item_id_cols:
+        item1_col, item2_col = item_id_cols
+        all_items = pd.concat(
+            [pairwise_df[item1_col], pairwise_df[item2_col]]
+        ).unique().tolist()
+        item_to_idx = {item: idx for idx, item in enumerate(all_items)}
+    else:
+        item_to_idx = {item: idx for idx, item in enumerate(data[item_id_name].tolist())}
+
+    n_items = len(item_to_idx)
+
+    # --- Full model ---
+    if _use_davidson:
+        bt_scores_full, model_name, comparisons_full, tau_full = _fit_davidson_model(
+            valid_df, item_to_idx, n_items, decision_col,
+            f"{model_label} [full]" if has_splits else model_label,
+        )
+    else:
+        bt_scores_full, model_name, comparisons_full = _fit_bt_model(
+            valid_df, item_to_idx, n_items, decision_col,
+            f"{model_label} [full]" if has_splits else model_label,
+        )
+        tau_full = None
+
+    raw_full = bt_scores_full.copy()
+    bt_scores_full = _normalize_bt_scores(bt_scores_full, normalization_scale)
+
+    # --- SE for full model (BT only) ---
+    se_full: Optional[np.ndarray] = None
+    if comparisons_full:
+        se_full = _compute_bt_se(raw_full, comparisons_full, n_items, normalization_scale)
+
+    # --- Split model (optional) ---
+    bt_scores_split = None
+    se_split: Optional[np.ndarray] = None
+    split_item_to_idx = None
+    compute_split = False
+
+    if has_splits:
+        within_split_df = valid_df[valid_df["item1_split"] == valid_df["item2_split"]]
+        if len(within_split_df) == 0:
+            warnings.warn(
+                "No within-split pairs found among valid comparisons. "
+                "Split scores will not be computed."
+            )
+        else:
+            split_items = sorted(
+                set(within_split_df["item1"].tolist())
+                | set(within_split_df["item2"].tolist())
+            )
+            split_item_to_idx = {item: idx for idx, item in enumerate(split_items)}
+            n_split = len(split_item_to_idx)
+
+            if _use_davidson:
+                raw_split, _, comparisons_split, tau_split = _fit_davidson_model(
+                    within_split_df, split_item_to_idx, n_split,
+                    decision_col, f"{model_label} [split]",
+                )
+            else:
+                raw_split, _, comparisons_split = _fit_bt_model(
+                    within_split_df, split_item_to_idx, n_split,
+                    decision_col, f"{model_label} [split]",
+                )
+                tau_split = None
+
+            bt_scores_split = _normalize_bt_scores(raw_split, normalization_scale)
+            compute_split = True
+            if comparisons_split:
+                se_split = _compute_bt_se(raw_split, comparisons_split, n_split, normalization_scale)
+
+    # --- Determine column names ---
+    model_prefix = model_name.replace("-", "_")
+    decision_suffix = (
+        "" if decision_col == "decision"
+        else f"_{decision_col.replace('decision_', '').replace('annotator_', '')}"
+    )
+    if has_splits:
+        full_col_name  = f"{model_prefix}_Score_full{decision_suffix}"
+        split_col_name = f"{model_prefix}_Score_split{decision_suffix}"
+        full_se_col    = f"{model_prefix}_SE_full{decision_suffix}"
+        split_se_col   = f"{model_prefix}_SE_split{decision_suffix}"
+    else:
+        full_col_name  = f"{model_prefix}_Score{decision_suffix}"
+        full_se_col    = f"{model_prefix}_SE{decision_suffix}"
+
+    # --- Write results onto result_df ---
+    if paired:
+        if "item_id" not in result_df.columns:
+            result_df = pd.DataFrame({"item_id": list(item_to_idx.keys())})
+        result_df[full_col_name] = [bt_scores_full[item_to_idx[item]] for item in result_df["item_id"]]
+        if se_full is not None:
+            result_df[full_se_col] = [se_full[item_to_idx[item]] for item in result_df["item_id"]]
+        if compute_split:
+            result_df[split_col_name] = [
+                bt_scores_split[split_item_to_idx[item]]
+                if item in split_item_to_idx else float("nan")
+                for item in result_df["item_id"]
+            ]
+            if se_split is not None:
+                result_df[split_se_col] = [
+                    se_split[split_item_to_idx[item]]
+                    if item in split_item_to_idx else float("nan")
+                    for item in result_df["item_id"]
+                ]
+    else:
+        result_df[full_col_name] = [bt_scores_full[item_to_idx[u]] for u in result_df[item_id_name]]
+        if se_full is not None:
+            result_df[full_se_col] = [se_full[item_to_idx[u]] for u in result_df[item_id_name]]
+        if compute_split:
+            result_df[split_col_name] = [
+                bt_scores_split[split_item_to_idx[u]]
+                if u in split_item_to_idx else float("nan")
+                for u in result_df[item_id_name]
+            ]
+            if se_split is not None:
+                result_df[split_se_col] = [
+                    se_split[split_item_to_idx[u]]
+                    if u in split_item_to_idx else float("nan")
+                    for u in result_df[item_id_name]
+                ]
+
+    # --- Diagnostics ---
+    tag_full  = f"[{model_label} full]"  if has_splits else f"[{model_label}]"
+
+    if _use_davidson:
+        n_ties = valid_df[decision_col].isin(TIE_VALUES).sum()
+        print(f"{tag_full} Including {n_ties} tie decisions")
+        if tau_full is not None:
+            print(f"{tag_full} Estimated tie propensity (tau): {tau_full:.4f}")
+    print(f"{tag_full} Mean {target_concept} score: {result_df[full_col_name].mean():.3f}")
+    print(f"{tag_full} Std  {target_concept} score: {result_df[full_col_name].std():.3f}")
+
+    if compute_split:
+        tag_split = f"[{model_label} split]"
+        n_within  = len(within_split_df)
+        n_missing = result_df[split_col_name].isna().sum()
+        print(f"{tag_split} {model_name} model fitted with {n_within} within-split comparisons")
+        if _use_davidson:
+            n_ties_s = within_split_df[decision_col].isin(TIE_VALUES).sum()
+            print(f"{tag_split} Including {n_ties_s} tie decisions")
+            if tau_split is not None:
+                print(f"{tag_split} Estimated tie propensity (tau): {tau_split:.4f}")
+        print(f"{tag_split} Mean {target_concept} score: {result_df[split_col_name].mean():.3f}")
+        print(f"{tag_split} Std  {target_concept} score: {result_df[split_col_name].std():.3f}")
+        if n_missing > 0:
+            print(f"{tag_split} {n_missing} item(s) had no within-split comparisons → NaN.")
+
+    if summarize:
+        for col_name in ([full_col_name, split_col_name] if compute_split else [full_col_name]):
+            print(f"\nSummary statistics ({col_name}):")
+            col_data = result_df[col_name].dropna()
+            for k, v in {
+                "mean":   col_data.mean(),
+                "median": col_data.median(),
+                "std":    col_data.std(),
+                "min":    col_data.min(),
+                "max":    col_data.max(),
+                "count":  col_data.count(),
+            }.items():
+                print(f"  {k}: {v:.3f}")
+
+    return result_df
+
 
 def score_items(
     pairwise_df: pd.DataFrame,
@@ -338,9 +571,9 @@ def score_items(
     paired: bool,
     item_id_cols: Optional[list],
     scored_df: Optional[pd.DataFrame] = None,
-    normalization_scale: Union[str, Tuple[float, float]] = "zero-to-one",
+    normalization_scale: Optional[Union[str, Tuple[float, float]]] = "zero-to-one",
     summarize: bool = True,
-    decision_col: str = "decision",
+    decision_col: Optional[Union[str, List[str]]] = "decision",
     use_davidson: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
@@ -373,12 +606,15 @@ def score_items(
         For paired data: ``['item1', 'item2']``.
     scored_df : pd.DataFrame or None
         Existing scored DataFrame to extend (for unpaired data).
-    normalization_scale : str or tuple, default 'zero-to-one'
-        How to normalise scores.
+    normalization_scale : str, tuple, or None, default 'zero-to-one'
+        How to normalise scores.  ``None`` returns raw model estimates.
     summarize : bool, default True
         Whether to print summary statistics.
-    decision_col : str, default 'decision'
-        Name of the decision column.
+    decision_col : str, list of str, or None, default 'decision'
+        Name(s) of the decision column(s).  If a list, scores are computed
+        for each column and all results are added to the same DataFrame.
+        If ``None``, auto-detects all columns starting with ``'decision'``
+        or ``'annotator_'``.
     use_davidson : bool or None, default None
         Force Davidson model.  If None, auto-detects based on ties.
 
@@ -393,207 +629,50 @@ def score_items(
             "Run generate_pairwise_annotations() first."
         )
 
-    if decision_col not in pairwise_df.columns:
-        available = [c for c in pairwise_df.columns if c.startswith("decision")]
-        raise ValueError(
-            f"Decision column '{decision_col}' not found in pairwise_df. "
-            f"Available decision columns: {available}"
-        )
-
-    # Auto-detect ties
-    has_ties = pairwise_df[decision_col].isin(TIE_VALUES).any()
-
-    if use_davidson is None:
-        use_davidson = has_ties
-        if has_ties:
-            num_ties = pairwise_df[decision_col].isin(TIE_VALUES).sum()
-            print(f"Detected {num_ties} ties in data. Using Davidson model.")
-
-    # Filter valid decisions
-    valid_values = WIN_1_VALUES + WIN_2_VALUES + (TIE_VALUES if use_davidson else [])
-    valid_df = pairwise_df[pairwise_df[decision_col].isin(valid_values)]
-
-    if len(valid_df) == 0:
-        raise ValueError("No valid comparisons found to compute scores.")
-
-    if len(valid_df) < len(pairwise_df):
-        warnings.warn(
-            f"Some rows filtered out due to invalid decision values. "
-            f"Using {len(valid_df)}/{len(pairwise_df)} comparisons."
-        )
-
-    model_label = (
-        decision_col.replace("decision_", "") if decision_col != "decision" else "default"
-    )
-
-    # Detect split columns
-    has_splits = (
-        "item1_split" in pairwise_df.columns
-        and "item2_split" in pairwise_df.columns
-    )
-
-    # Build item → index mapping
-    if paired and item_id_cols:
-        item1_col, item2_col = item_id_cols
-        all_items = pd.concat(
-            [pairwise_df[item1_col], pairwise_df[item2_col]]
-        ).unique().tolist()
-        item_to_idx = {item: idx for idx, item in enumerate(all_items)}
-    else:
-        item_to_idx = {item: idx for idx, item in enumerate(data[item_id_name].tolist())}
-
-    n_items = len(item_to_idx)
-
-    # --- Full model ---
-    if use_davidson:
-        bt_scores_full, model_name, comparisons_full, tau_full = _fit_davidson_model(
-            valid_df, item_to_idx, n_items, decision_col,
-            f"{model_label} [full]" if has_splits else model_label,
-        )
-    else:
-        bt_scores_full, model_name, comparisons_full = _fit_bt_model(
-            valid_df, item_to_idx, n_items, decision_col,
-            f"{model_label} [full]" if has_splits else model_label,
-        )
-        tau_full = None
-    
-    raw_full = bt_scores_full.copy()  # keep raw log-strengths for SE
-    bt_scores_full = _normalize_bt_scores(bt_scores_full, normalization_scale)
-
-    # --- SE for full model (BT only) ---
-    se_full: Optional[np.ndarray] = None
-    if comparisons_full:  # empty for Davidson
-        se_full = _compute_bt_se(raw_full, comparisons_full, n_items, normalization_scale)
-
-    # --- Split model (optional) ---
-    bt_scores_split = None
-    se_split: Optional[np.ndarray] = None
-    split_item_to_idx = None
-    compute_split = False
-
-    if has_splits:
-        within_split_df = valid_df[valid_df["item1_split"] == valid_df["item2_split"]]
-        if len(within_split_df) == 0:
-            warnings.warn(
-                "No within-split pairs found among valid comparisons. "
-                "Split scores will not be computed."
+    # --- Resolve decision_col to a list ---
+    if decision_col is None:
+        cols = [
+            c for c in pairwise_df.columns
+            if c.startswith("decision") or c.startswith("annotator_")
+        ]
+        if not cols:
+            raise ValueError(
+                "No decision or annotator columns found in pairwise_df. "
+                "Run generate_pairwise_annotations() first."
             )
-        else:
-            split_items = sorted(
-                set(within_split_df["item1"].tolist())
-                | set(within_split_df["item2"].tolist())
-            )
-            split_item_to_idx = {item: idx for idx, item in enumerate(split_items)}
-            n_split = len(split_item_to_idx)
-
-            if use_davidson:
-                raw_split, _, comparisons_split, tau_split = _fit_davidson_model(
-                    within_split_df, split_item_to_idx, n_split,
-                    decision_col, f"{model_label} [split]",
-                )
-            else:
-                raw_split, _, comparisons_split = _fit_bt_model(
-                    within_split_df, split_item_to_idx, n_split,
-                    decision_col, f"{model_label} [split]",
-                )
-                tau_split = None
-                
-            bt_scores_split = _normalize_bt_scores(raw_split, normalization_scale)
-            compute_split = True
-            if comparisons_split:
-                se_split = _compute_bt_se(raw_split, comparisons_split, n_split, normalization_scale)
-
-    # --- Determine column names ---
-    model_prefix = model_name.replace("-", "_")
-    decision_suffix = (
-        "" if decision_col == "decision"
-        else f"_{decision_col.replace('decision_', '')}"
-    )
-    if has_splits:
-        full_col_name  = f"{model_prefix}_Score_full{decision_suffix}"
-        split_col_name = f"{model_prefix}_Score_split{decision_suffix}"
-        full_se_col    = f"{model_prefix}_SE_full{decision_suffix}"
-        split_se_col   = f"{model_prefix}_SE_split{decision_suffix}"
+        print(f"Auto-detected {len(cols)} decision column(s): {cols}")
+        decision_cols = cols
+    elif isinstance(decision_col, str):
+        decision_cols = [decision_col]
+    elif isinstance(decision_col, list):
+        decision_cols = decision_col
     else:
-        full_col_name  = f"{model_prefix}_Score{decision_suffix}"
-        full_se_col    = f"{model_prefix}_SE{decision_suffix}"
+        raise TypeError(
+            "decision_col must be a str, list of str, or None."
+        )
 
-    # --- Build result DataFrame ---
+    # --- Initialise result DataFrame ---
     if paired:
-        result = pd.DataFrame({"item_id": list(item_to_idx.keys())})
-        result[full_col_name] = [bt_scores_full[item_to_idx[item]] for item in result["item_id"]]
-        if se_full is not None:
-            result[full_se_col] = [se_full[item_to_idx[item]] for item in result["item_id"]]
-        if compute_split:
-            result[split_col_name] = [
-                bt_scores_split[split_item_to_idx[item]]
-                if item in split_item_to_idx else float("nan")
-                for item in result["item_id"]
-            ]
-            if se_split is not None:
-                result[split_se_col] = [
-                    se_split[split_item_to_idx[item]]
-                    if item in split_item_to_idx else float("nan")
-                    for item in result["item_id"]
-                ]
+        # Will be populated by _score_single_col
+        result = pd.DataFrame()
     else:
         result = scored_df.copy() if scored_df is not None else data.copy()
-        result[full_col_name] = [bt_scores_full[item_to_idx[u]] for u in result[item_id_name]]
-        if se_full is not None:
-            result[full_se_col] = [se_full[item_to_idx[u]] for u in result[item_id_name]]
-        if compute_split:
-            result[split_col_name] = [
-                bt_scores_split[split_item_to_idx[u]]
-                if u in split_item_to_idx else float("nan")
-                for u in result[item_id_name]
-            ]
-            if se_split is not None:
-                result[split_se_col] = [
-                    se_split[split_item_to_idx[u]]
-                    if u in split_item_to_idx else float("nan")
-                    for u in result[item_id_name]
-                ]
 
-    # --- Diagnostics ---
-    tag_full  = f"[{model_label} full]"  if has_splits else f"[{model_label}]"
-    tag_split = f"[{model_label} split]" if has_splits else ""
-
-    if use_davidson:
-        n_ties = valid_df[decision_col].isin(TIE_VALUES).sum()
-        print(f"{tag_full} Including {n_ties} tie decisions")
-        if tau_full is not None:
-            print(f"{tag_full} Estimated tie propensity (tau): {tau_full:.4f}")
-    print(f"{tag_full} Mean {target_concept} score: {result[full_col_name].mean():.3f}")
-    print(f"{tag_full} Std  {target_concept} score: {result[full_col_name].std():.3f}")
-
-    if compute_split:
-        tag_split = f"[{model_label} split]"
-        n_within  = len(within_split_df)
-        n_missing = result[split_col_name].isna().sum()
-        print(f"{tag_split} {model_name} model fitted with {n_within} within-split comparisons")
-        if use_davidson:
-            n_ties_s = within_split_df[decision_col].isin(TIE_VALUES).sum()
-            print(f"{tag_split} Including {n_ties_s} tie decisions")
-            if tau_split is not None:
-                print(f"{tag_split} Estimated tie propensity (tau): {tau_split:.4f}")
-        print(f"{tag_split} Mean {target_concept} score: {result[split_col_name].mean():.3f}")
-        print(f"{tag_split} Std  {target_concept} score: {result[split_col_name].std():.3f}")
-        if n_missing > 0:
-            print(f"{tag_split} {n_missing} item(s) had no within-split comparisons → NaN.")
-
-    if summarize:
-        for col_name in ([full_col_name, split_col_name] if compute_split else [full_col_name]):
-            print(f"\nSummary statistics ({col_name}):")
-            col_data = result[col_name].dropna()
-            for k, v in {
-                "mean":   col_data.mean(),
-                "median": col_data.median(),
-                "std":    col_data.std(),
-                "min":    col_data.min(),
-                "max":    col_data.max(),
-                "count":  col_data.count(),
-            }.items():
-                print(f"  {k}: {v:.3f}")
+    # --- Score each decision column ---
+    for dcol in decision_cols:
+        result = _score_single_col(
+            pairwise_df=pairwise_df,
+            data=data,
+            item_id_name=item_id_name,
+            target_concept=target_concept,
+            paired=paired,
+            item_id_cols=item_id_cols,
+            result_df=result,
+            normalization_scale=normalization_scale,
+            summarize=summarize,
+            decision_col=dcol,
+            use_davidson=use_davidson,
+        )
 
     return result
 
