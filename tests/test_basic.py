@@ -166,8 +166,35 @@ class TestLLMClient:
             )
         assert client._reasoning_params(max_tokens=1000) == {}
 
+    def test_ollama_reasoning_dict_requires_think_key(self):
+        with patch.object(pairadigm.LLMClient, "_initialize_client", return_value=MagicMock()):
+            client = pairadigm.LLMClient(
+                model_name="llama3.2",
+                provider="ollama",
+                reasoning={"reasoning_effort": "high"},
+            )
+
+        with pytest.raises(ValueError, match="'think'"):
+            client._reasoning_params(max_tokens=1000)
+
+    def test_ollama_think_is_top_level_chat_parameter(self):
+        client = pairadigm.LLMClient.__new__(pairadigm.LLMClient)
+        client.model_name = "llama3.2"
+        client.provider = "ollama"
+        client.reasoning = {"think": "high"}
+        client.client = MagicMock()
+        client.client.chat.return_value = {"message": {"content": "answer"}}
+
+        result = client._generate_ollama("prompt", "system", None, 1000)
+
+        assert result == "answer"
+        params = client.client.chat.call_args.kwargs
+        assert params["think"] == "high"
+        assert "think" not in params["options"]
+
     def test_google_named_reasoning_requires_compatible_sdk(self):
-        from google.genai import types
+        google_genai = pytest.importorskip("google.genai")
+        types = google_genai.types
 
         client = pairadigm.LLMClient.__new__(pairadigm.LLMClient)
         client.model_name = "gemini-3-pro-preview"
@@ -476,6 +503,20 @@ class TestSaveLoad:
         assert list(loaded.data.columns) == list(obj.data.columns)
         assert len(loaded.pairwise_df) == len(obj.pairwise_df)
         assert len(loaded.scored_df) == len(obj.scored_df)
+
+    @pytest.mark.parametrize("field", ["providers", "reasoning"])
+    def test_load_rejects_mismatched_client_metadata(self, field):
+        obj = self._make_obj_with_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            obj.save(tmpdir)
+            metadata_path = os.path.join(tmpdir, "metadata.json")
+            metadata = json.loads(open(metadata_path, encoding="utf-8").read())
+            metadata[field] = []
+            with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+                json.dump(metadata, metadata_file)
+
+            with pytest.raises(ValueError, match=field):
+                pairadigm.Pairadigm.load(tmpdir)
 
     def test_load_pickle_raises_value_error(self):
         from pairadigm.persistence import load_pairadigm

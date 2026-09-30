@@ -206,8 +206,17 @@ def load_pairadigm(
     from .client import LLMClient
 
     model_names = meta["model_names"]
+    if not isinstance(model_names, list):
+        raise ValueError("Invalid metadata: 'model_names' must be a list.")
+
     providers   = meta.get("providers", [None] * len(model_names))
     reasoning   = meta.get("reasoning", [None] * len(model_names))
+    for field_name, values in (("providers", providers), ("reasoning", reasoning)):
+        if not isinstance(values, list) or len(values) != len(model_names):
+            raise ValueError(
+                f"Invalid metadata: '{field_name}' must be a list with "
+                f"{len(model_names)} entries to match 'model_names'."
+            )
 
     if api_keys is not None:
         if isinstance(api_keys, str):

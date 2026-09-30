@@ -123,8 +123,14 @@ class LLMClient:
                 if 'thinking' in reasoning or 'output_config' in reasoning:
                     return dict(reasoning)
                 return {'thinking': dict(reasoning)}
-            if self.provider == 'ollama' and 'think' not in reasoning:
-                return {'think': dict(reasoning)}
+            if self.provider == 'ollama':
+                if set(reasoning) != {'think'}:
+                    raise ValueError(
+                        "Ollama reasoning dictionaries must contain only the 'think' key."
+                    )
+                if not isinstance(reasoning['think'], (str, bool)):
+                    raise TypeError("Ollama 'think' must be a named level or bool.")
+                return dict(reasoning)
             if self.provider == 'huggingface':
                 if 'extra_body' in reasoning:
                     return dict(reasoning)
